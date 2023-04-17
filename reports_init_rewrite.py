@@ -9,7 +9,6 @@ import os
 import time
 from io import BytesIO
 
-
 class Sensor(BaseModel):
     """Gives the different attributes for relevant sensors used in each fault.
 
@@ -34,6 +33,7 @@ sensor_attrs = ['col_name','long_name','measurement_type', 'short_name']
 
 # this is just a simple way to store the sensors before we make them into objects
 # this is ordered as: col_name, long_name, measurement_type, short_name, where short_name is optional
+# this should probably not live in code, would be better as a csv or something similar
 slist = [['mat', 'mixing air temperature', 'temperature', 'Mix Temp'],
         ['rat', 'return air temperature', 'temperature', 'Return Temp'],
         ['oat', 'outside air temperature', 'temperature', 'Out Temp'],
@@ -79,10 +79,6 @@ class ReportCalculator:
         for sensor in self.fault.sensors:
             sensor.avg_fault_val = round(df[sensor.col_name].where(df[output_col] == 1).mean(), 2)
 
-        # self.avg_fault_cond_vals = {}
-        # for col in self.fault.col_names:
-        #     avg_fault_cond_vals[col] = round(df[col].where(df[output_col] == 1).mean(), 2)
-
         motor_on = df['supply_vfd_speed'].gt(1.).astype(int)
         self.hours_motor_runtime = round(
             (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
@@ -110,30 +106,14 @@ class DocumentGenerator:
         plt.title(f'Fault Conditions {self.fault.num} Plot')
 
         # data_axes is the different axes grouped by measurement_type, so they can be graphed on similar scales
-        # breakpoint()
-        # data plot
-
         for i in range(n_measurement_types):
             for sensor in self.fault.sensors:
                 if sensor.measurement_type == measurement_types[i]:
                     data_axes[i].plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
 
             data_axes[i].legend(loc='best')
-            # data_axes[i].set_ylabel('AHU Temps °F')
             data_axes[i].set_ylabel(measurement_types[i])
-
-        #     data_axes[i]
-
-        # for ax in data_axes:
-        # for measurement_type in measurement_types:
-
-        #     for sensor in self.fault.sensors
-        #         # get fault col measurement types, plot by that measurement type
-
-        #         ax1.plot(df.index, df[sensor.col_name], label=sensor.short_name)
-
-        #         ax1.legend(loc='best')
-        #         ax1.set_ylabel('AHU Temps °F')
+            # ax1.set_ylabel('AHU Temps °F')
 
         # fault flag plot
         fault_flag_ax.plot(self.df.index, self.df[f'fc{self.fault.num}_flag'], label="Fault", color="k")
@@ -205,7 +185,6 @@ class DocumentGenerator:
             paragraph.style = "List Bullet"
             paragraph.add_run(line)
 
-
         paragraph = self.document.add_paragraph()
 
         # if there are faults, add the histogram plot
@@ -243,12 +222,7 @@ class DocumentGenerator:
         self.document.add_heading(
             'Summary Statistics filtered for when the AHU is running', level=1)
 
-        # summ_stats_cols = [satsp_col, oat_col]
-
         for sensor in calculator.fault.sensors:
-        # for col in self.fault_cols:
-            # col_short_name = SENSORS_DF[SENSORS_DF['col_name'] == col].iloc[0]['short_name']
-            # ADD in Summary Statistics
             self.document.add_heading(sensor.short_name, level=3)
             paragraph = self.document.add_paragraph()
             paragraph.style = 'List Bullet'
@@ -321,7 +295,6 @@ df2 = _fc2.apply(this_df)
 calculator = ReportCalculator(fc2, this_df)
 
 document_generator = DocumentGenerator(fc2, this_df)
-
 
 # breakpoint()
 # print(calculator.summarize_fault_times())
