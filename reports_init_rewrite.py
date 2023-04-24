@@ -8,6 +8,7 @@ import math
 import os
 import time
 from io import BytesIO
+from num2words import num2words
 
 class Sensor(BaseModel):
     """Gives the different attributes for relevant sensors used in each fault.
@@ -15,12 +16,13 @@ class Sensor(BaseModel):
     Atrributes:
         col_name            The standard column name any time this sensor is in a Pandas data frame
         long_name           The standard full sensor name, how it's referred to in fault reports
-        measurement_type    How the sensor is measured (temperature, percent, speed, etc.)
+        measurement         How the sensor is measured (temperature, percent, pressure, etc.)
         short_name          The sensor's corresponding short name, mainly used for legends in graphs
     """
     col_name: str
     long_name: str
-    measurement_type: str
+    measurement: str
+    units: str
     short_name: Optional[str] = None
     avg_fault_val: Optional[float] = None
 
@@ -87,22 +89,28 @@ class DocumentGenerator:
 
     # creates combination timeseries and fault flag plots 
     def create_dataset_plot(self) -> plt:
-        # need to make number of axes == number of measurement types + 1
-        measurement_types = list(set([sensor.measurement_type for sensor in self.fault.sensors]))
-        n_measurement_types = len(measurement_types)
+        # group key sensors by measurement type
+        import itertools
+        grouped_sensors = []
+        for key, group in itertools.groupby(self.fault.sensors, key=lambda x: x.measurement):    
+            grouped_sensors.append(list(group))
 
-        fig, (*data_axes, fault_flag_ax) = plt.subplots(n_measurement_types + 1, 1, figsize=(25, 8))
+        n_groups = len(grouped_sensors)
+
+        fig, (*data_axes, fault_flag_ax) = plt.subplots(n_groups + 1, 1, figsize=(25, 8))
         plt.title(f'Fault Conditions {self.fault.num} Plot')
 
-        # data_axes is the different axes grouped by measurement_type, so they can be graphed on similar scales
-        for i in range(n_measurement_types):
-            for sensor in self.fault.sensors:
-                if sensor.measurement_type == measurement_types[i]:
-                    data_axes[i].plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
+        # data_axes is the different axes grouped by measurement, so they can be graphed on similar scales
+        for i in range(n_groups):
+            group = grouped_sensors[i]
+            for sensor in group:
+                data_axes[i].plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
+
+            measurement = list(set([sensor.measurement for sensors in group]))[0]
+            units = list(set([sensor.units for sensors in group]))[0]
 
             data_axes[i].legend(loc='best')
-            data_axes[i].set_ylabel(measurement_types[i])
-            # ax1.set_ylabel('AHU Temps °F')
+            data_axes[i].set_ylabel(f'{measurement} ({units})')
 
         # fault flag plot
         fault_flag_ax.plot(self.df.index, self.df[f'fc{self.fault.num}_flag'], label="Fault", color="k")
@@ -132,7 +140,7 @@ class DocumentGenerator:
         print(f"Starting {path} docx report!")
 
         # add fault definition
-        self.document.add_heading(f"Fault Condition {self.fault.num} Report", 0)
+        self.document.add_heading(f"Fault Condition {num2words(self.fault.num).title()} Report", 0)
 
         p = self.document.add_paragraph(self.fault.definition)
 
@@ -195,8 +203,8 @@ class DocumentGenerator:
             max_faults_line = f'When fault condition {self.fault.num} is True, the'
 
             for sensor in calculator.fault.sensors:
-                if sensor.measurement_type == 'temperature': # only temp sensors
-                    max_faults_line =  f'{max_faults_line} average {sensor.long_name} is {sensor.avg_fault_val} in °F, ' # need to add {units}
+                if sensor.measurement == 'temperature': # only temp sensors
+                    max_faults_line =  f'{max_faults_line} average {sensor.long_name} is {sensor.avg_fault_val} {sensor.units}, ' # need to add {units}
 
             max_faults_line = max_faults_line[0:-2] + "."
 
@@ -213,7 +221,7 @@ class DocumentGenerator:
             'Summary Statistics filtered for when the AHU is running', level=1)
 
         for sensor in calculator.fault.sensors:
-            if sensor.measurement_type == 'temperature': # only temp sensors
+            if sensor.measurement == 'temperature': # only temp sensors
                 self.document.add_heading(sensor.short_name, level=3)
                 paragraph = self.document.add_paragraph()
                 paragraph.style = 'List Bullet'
@@ -237,19 +245,23 @@ class DocumentGenerator:
         return self.document
 
 
-sensor_attrs = ['col_name','long_name','measurement_type', 'short_name']
+sensor_attrs = ['col_name','long_name','measurement', 'units', 'short_name']
 
 # this is just a simple way to store the sensors before we make them into objects
-# this is ordered as: col_name, long_name, measurement_type, short_name, where short_name is optional
-# this should probably not live in code, would be better as a csv or something similar
-slist = [['mat', 'mixing air temperature', 'temperature', 'Mix Temp'],
-        ['rat', 'return air temperature', 'temperature', 'Return Temp'],
-        ['oat', 'outside air temperature', 'temperature', 'Out Temp'],
-        ['satsp', 'supply air temperature setpoint', 'temperature', 'Out Temp',],
-        ['economizer_sig', 'outside air damper position', 'percent', 'AHU Dpr Cmd'],
-        ['clg', 'AHU cooling valve', 'percent', 'AHU cool valv'],
-        ['htg', 'AHU heating valve', 'percent', 'AHU htg valv'],
-        ['vav_total_air_flow', 'VAV total air flow', 'volume']
+# this is ordered as: col_name, long_name, measurement, short_name, where short_name is optional
+# this should probably not live in code, would be better as a csv or json or database or whatever
+slist = [['mat', 'mixing air temperature', 'temperature', '°F', 'Mix Temp'],
+        ['rat', 'return air temperature', 'temperature', '°F', 'Return Temp'],
+        ['oat', 'outside air temperature', 'temperature', '°F', 'Out Temp'],
+        ['satsp', 'supply air temperature setpoint', 'temperature', '°F', 'Out Temp',],
+        ['economizer_sig', 'outside air damper position', 'percent', '%', 'AHU Dpr Cmd'],
+        ['clg', 'AHU cooling valve', 'percent', '%', 'AHU Cool Valv'],
+        ['htg', 'AHU heating valve', 'percent', '%', 'AHU Htg Valv'],
+        ['cooling_sig', 'cooling signal', 'operating state', '', 'Mech Clg'],
+        ['heating_sig', 'heating signal', 'operating state', '', 'Heat'],
+        ['vav_total_flow', 'VAV total air flow', 'volume flow', 'cfm', 'VAV total flow'],
+        ['duct_static', 'duct static pressure', 'pressure','inches WC', 'static']
+
         # ['supply_vfd_speed', 'supply fan speed', 'speed']
     ]
 
@@ -258,22 +270,27 @@ ALL_SENSORS = [Sensor(**dict(zip(sensor_attrs, sensor))) for sensor in slist]
 
 fault_attrs = ['num', 'col_names', 'definition']
 
+# same thing here -- this shouldn't be stored as code, should be separate files that can be easily tweaked
 fault_defs = [
+    [1, ['duct_static', 'duct_static_setpoint', 'supply_vfd_speed'], """Fault condition one of ASHRAE Guideline 36 is related to flagging poor performance of a AHU variable supply fan attempting to control to a duct pressure setpoint. Fault condition equation as defined by ASHRAE:"""],
     [2, ['mat', 'rat', 'oat'], """Fault condition two and three of ASHRAE Guideline 36 is related to flagging mixing air temperatures of the AHU that are out of acceptable ranges. Fault condition 2 flags mixing air temperatures that are too low and fault condition 3 flags mixing temperatures that are too high when in comparision to return and outside air data. The mixing air temperatures in theory should always be in between the return and outside air temperatures ranges. Fault condition two equation as defined by ASHRAE:"""],
+    [3, ['mat','rat','oat'], """Fault condition two and three of ASHRAE Guideline 36 is related to flagging mixing air temperatures of the AHU that are out of acceptable ranges. Fault condition 2 flags mixing air temperatures that are too low and fault condition 3 flags mixing temperatures that are too high when in comparision to return and outside air data. The mixing air temperatures in theory should always be in between the return and outside air temperatures ranges. Fault condition three equation as defined by ASHRAE:"""],
+    [4, ['economizer_sig','heating_sig','cooling_sig'], """Fault condition four of ASHRAE Guideline 36 is related to flagging AHU control programming that is hunting between heating, economizing, economizing plus mechanical cooling, and mechanical cooling operating states. This fault diagnostic does NOT flag simultaneous heating and cooling, just excessive cycling between the states or operating modes the AHU maybe going in and out of. Fault condition four equation as defined by ASHRAE:"""],
     [9, ['satsp', 'oat'], """Fault condition nine of ASHRAE Guideline 36 is an AHU economizer free cooling mode only with an attempt at flagging conditions where the outside air temperature is too warm for cooling without additional mechanical cooling. Fault condition nine equation as defined by ASHRAE:"""],
-    [10, ['oat', 'mat', 'clg', 'economizer_sig'], """Fault condition ten of ASHRAE Guideline 36 is an AHU economizer + mechanical cooling mode only with an attempt at flagging conditions where the outside air temperature and mixing air temperatures are not approximetely equal when the AHU is in a 100% outside air mode. Fault condition ten equation as defined by ASHRAE:"""]
+    [10, ['oat', 'mat', 'cooling_sig', 'economizer_sig'], """Fault condition ten of ASHRAE Guideline 36 is an AHU economizer + mechanical cooling mode only with an attempt at flagging conditions where the outside air temperature and mixing air temperatures are not approximetely equal when the AHU is in a 100% outside air mode. Fault condition ten equation as defined by ASHRAE:"""]
 ]
 
 ALL_FAULTS = [Fault(**dict(zip(fault_attrs,fault_def))) for fault_def in fault_defs]
 
-# THIS_DF = pd.read_csv("ahu_data/hvac_random_fake_data/fc2_3_fake_data1.csv", index_col="Date", parse_dates=True).rolling("5T").mean()
+FAULT_NUM = 4
 
+# -------------------- FC 10
 # OUTDOOR_DEGF_ERR_THRES = 5.
 # MIX_DEGF_ERR_THRES = 5.
 # RETURN_DEGF_ERR_THRES = 2.
 
 # from faults import FaultConditionTwo
-# _fc10 = FaultConditionTwo(
+# _fc2 = FaultConditionTwo(
 #     OUTDOOR_DEGF_ERR_THRES,
 #     MIX_DEGF_ERR_THRES,
 #     RETURN_DEGF_ERR_THRES,
@@ -283,33 +300,56 @@ ALL_FAULTS = [Fault(**dict(zip(fault_attrs,fault_def))) for fault_def in fault_d
 #     "supply_vfd_speed"
 # )
 
+# #-------------------- FC 10
+# # ADJUST this param for the AHU MIN OA damper stp
+# AHU_MIN_OA = 20
+
+# # G36 params shouldnt need adjusting
+# # error threshold parameters
+# OAT_DEGF_ERR_THRES = 5
+# MAT_DEGF_ERR_THRES = 5
+
+# from faults import FaultConditionTen
+# FAULT_CONDITION = FaultConditionTen(
+#     OAT_DEGF_ERR_THRES,
+#     MAT_DEGF_ERR_THRES,
+#     "mat",
+#     "oat",
+#     "clg",
+#     "economizer_sig",
+# )
+
+# -------------------- FC 4
+# G36 params COULD need adjusting
+# default OS MAX state changes is 7
+# which seems high, could be worth adjusting 
+# down to 4 to see what the faults look like
+DELTA_OS_MAX = 7
 
 # ADJUST this param for the AHU MIN OA damper stp
 AHU_MIN_OA = 20
 
-# G36 params shouldnt need adjusting
-# error threshold parameters
-OAT_DEGF_ERR_THRES = 5
-MAT_DEGF_ERR_THRES = 5
-
-from faults import FaultConditionTen
-_fc10 = FaultConditionTen(
-    OAT_DEGF_ERR_THRES,
-    MAT_DEGF_ERR_THRES,
-    "mat",
-    "oat",
-    "clg",
+from faults import FaultConditionFour
+FAULT_CONDITION = FaultConditionFour(
+    DELTA_OS_MAX,
+    AHU_MIN_OA,
     "economizer_sig",
+    "heating_sig",
+    "cooling_sig",
+    "supply_vfd_speed"
 )
 
-THIS_DF = pd.read_csv(f"ahu_data/hvac_random_fake_data/fc10_fake_data1.csv", index_col="Date", parse_dates=True).rolling("5T").mean()
+DF = pd.read_csv(f"ahu_data/hvac_random_fake_data/fc{FAULT_NUM}_fake_data1.csv", index_col="Date", parse_dates=True).rolling("5T").mean()
 
-df2 = _fc10.apply(THIS_DF)
+df2 = FAULT_CONDITION.apply(DF)
 
-THIS_FAULT = [fault for fault in ALL_FAULTS if fault.num == 10][0]
-calculator = ReportCalculator(THIS_FAULT, THIS_DF)
+FAULT_OBJ = [fault for fault in ALL_FAULTS if fault.num == FAULT_NUM][0]
 
-document_generator = DocumentGenerator(THIS_FAULT, THIS_DF)
+# breakpoint()
+
+# calculator = ReportCalculator(FAULT_OBJ, df2)
+
+document_generator = DocumentGenerator(FAULT_OBJ, df2)
 
 # breakpoint()
 # print(calculator.summarize_fault_times())
@@ -320,4 +360,4 @@ document_generator = DocumentGenerator(THIS_FAULT, THIS_DF)
 # plt.show()
 
 report = document_generator.create_report('blah')
-report.save("test_gen.docx")
+report.save(f"test_fc{FAULT_NUM}.docx")
