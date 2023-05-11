@@ -67,38 +67,30 @@ class Fault(BaseModel):
 
 # fault -- data cols, non-data cols
 
-
-class OperationMode(BaseModel):
-    col_name: str
-    name: str
-    stats: tuple
+# class OperationMode(BaseModel):
+#     col_name: str
+#     name: str
+#     stats: tuple
 
 class Calculator:
-    """Calculates the data fed to the report. Assumes 'supply_vfd_speed' col exists.
-        Attributes:
-            op_mode_cols    List of operation mode columns to summarize for amount of time spent in each. Optional, whereupon this function only provides the total time in the dataset and the time in the fault mode.
-
     """
-    def __init__(self, fault, df, op_mode_cols: list = None):
-        self.fault = fault
+    Calculates the data fed to the report. Assumes 'supply_vfd_speed' col exists.
+    """
+    def __init__(self, fault, df):
+        # self.fault = fault
         self.df = df
-        self.fault_col = f"fc{self.fault.num}_flag"
-        self.op_mode_cols = op_mode_cols
+        self.fault_col = f"fc{fault.num}_flag"
 
-        # compile op_mode_cols as pseudo-sensors
-        if self.op_mode_cols:
-            self.pseudo_sensors = [sensor for sensor in ALL_SENSORS if sensor.col_name in op_mode_cols]
+        self.compile_stats(fault)
 
-        self.compile_stats()
-
-    def summarize_avg_faults(self):
+    def summarize_avg_faults(self,fault: Fault):
         """
         Store each sensor's average fault value as an attribute of that sensor.
         """
-        for sensor in self.fault.sensors:
+        for sensor in fault.sensors:
             sensor.avg_fault_val = round(self.df[sensor.col_name].where(self.df[self.fault_col] == 1).mean(), 2)
 
-    def summarize_operational_time(self, df):
+    def summarize_operational_time(self, df: pd.DataFrame):
         """
         Summarize the times this df is in the provided modes. Only works for boolean cols indexing when the mode is active, where 1 is "active" and 0 is "not active".
         """
@@ -111,7 +103,7 @@ class Calculator:
 
         return(days_in_mode, hours_in_mode, percent_in_mode)
 
-    def compile_stats(self):
+    def compile_stats(self, fault: Fault):
         """
         Compile the relevant stats. These are summary stats for relevant data, as well as operational times for different operation modes.
         """
@@ -124,11 +116,13 @@ class Calculator:
         __, self.hours_in_fault_mode, self.percent_in_fault_mode = self.summarize_operational_time(df[self.fault_col])
         __, self.hours_motor_runtime, __ = self.summarize_operational_time(df['motor_on'])
 
-        if self.op_mode_cols:
-            for sensor in self.pseudo_sensors:
+        for sensor in fault.sensors:
+            if sensor.measurement == 'operating state':
                 sensor.op_time = self.summarize_operational_time(df[sensor.col_name])
+            else:
+                sensor.avg_fault_val = round(self.df[sensor.col_name].where(self.df[self.fault_col] == 1).mean(), 2)
 
-        self.summarize_avg_faults()
+        self.summarize_avg_faults(fault)
 
         self.df_motor_on_filtered = self.df[self.df['supply_vfd_speed'] > 1.0]
 
@@ -152,16 +146,13 @@ class DocumentGenerator:
         show the fault flag.
         """
 
-        data_sensors = self.calculator.pseudo_sensors if self.calculator.op_mode_cols else self.calculator.fault.sensors
-
         # group sensors of interest by measurement type
         grouped_sensors = []
-        for key, group in itertools.groupby(data_sensors, key=lambda x: x.measurement):
+        for key, group in itertools.groupby(self.fault.sensors, key=lambda x: x.measurement):
             grouped_sensors.append(list(group))
 
         n_groups = len(grouped_sensors)
 
-        # fig, (*data_axes, fault_flag_ax) = plt.subplots(n_groups + 1, 1, figsize=(25, 8))
         fig, data_axes = plt.subplots(n_groups, 1, figsize=(25, 4*n_groups))
         # plt.title(f'Fault Condition {self.fault.num} Plot')
 
@@ -169,40 +160,28 @@ class DocumentGenerator:
         # ttps://towardsdatascience.com/pandas-dataframe-group-by-consecutive-certain-values-a6ed8e5d8cc
         fault_grouping = self.df[self.df['fault_flag'] == 1].groupby((self.df['fault_flag'] != 1).cumsum())
 
+        # this is for changing the color palette choice for each subplot
         # plt.rcParams["axes.prop_cycle"] = plt.cycler("color", plt.cm.tab10c.colors)
         # cmap_list = ['Dark2', 'Set1', 'Set2', 'tab10'] # reasonable contrasting colormaps to use
 
         # data_axes groups the different axes by measurement, so they can be graphed on similar scales
-        if n_groups > 1:
-            for i in range(n_groups):
-                group = grouped_sensors[i]
-                for sensor in group:
-                    data_axes[i].plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
+        if n_groups == 1:
+            data_axes = [data_axes]
 
-                    # highlight each span of faults
-                    for k, v in fault_grouping:
-                        data_axes[i].axvspan(v.index[0], v.index[-1], alpha=0.1, color = 'blue')
-
-                measurement = list(set([sensor.measurement for sensors in group]))[0]
-                units = list(set([sensor.units for sensors in group]))[0]
-
-                data_axes[i].legend(loc='best')
-                data_axes[i].set_ylabel(f'{measurement} ({units})')
-        else:
-            group = grouped_sensors[0]
+        for i in range(n_groups):
+            group = grouped_sensors[i]
             for sensor in group:
-
-                data_axes.plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
+                data_axes[i].plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
 
                 # highlight each span of faults
                 for k, v in fault_grouping:
-                    data_axes.axvspan(v.index[0], v.index[-1], alpha=0.1, color = 'blue')
+                    data_axes[i].axvspan(v.index[0], v.index[-1], alpha=0.1, color = 'blue')
 
-                measurement = list(set([sensor.measurement for sensors in group]))[0]
-                units = list(set([sensor.units for sensors in group]))[0]
+            measurement = list(set([sensor.measurement for sensors in group]))[0]
+            units = list(set([sensor.units for sensors in group]))[0]
 
-                data_axes.legend(loc='best')
-                data_axes.set_ylabel(f'{measurement} ({units})')
+            data_axes[i].legend(loc='best')
+            data_axes[i].set_ylabel(f'{measurement} ({units})')
 
         plt.legend()
         plt.tight_layout()
@@ -276,7 +255,7 @@ class DocumentGenerator:
 
             max_faults_line = f'When fault condition {self.fault.num} is True, the'
 
-            for sensor in self.calculator.fault.sensors:
+            for sensor in self.fault.sensors:
                 if sensor.measurement == 'temperature': # only temp sensors
                     max_faults_line =  f'{max_faults_line} average {sensor.long_name} is {sensor.avg_fault_val} {sensor.units}, ' # need to add {units}
 
@@ -297,21 +276,12 @@ class DocumentGenerator:
         self.document.add_paragraph(max_faults_line, style='List Bullet')
 
     def format_summary_stats(self):
-        if not self.calculator.op_mode_cols: # just summarize temperature levels for different temp sensors
-            self.document.add_heading('Summary Statistics filtered for when the AHU is running', level=1)
+        data_types = set([sensor.measurement for sensor in self.fault.sensors])
 
-            for sensor in self.calculator.fault.sensors:
-                if sensor.measurement == 'temperature': # only temp sensors
-                    self.document.add_heading(sensor.short_name, level=3)
-                    self.document.add_paragraph(
-                        str(self.calculator.df_motor_on_filtered[sensor.col_name].describe()),
-                        style = 'List Bullet'
-                        )
-
-        else: # if self.calculator has psuedo_sensors, format summary times for them
+        if 'operating state' in data_types: # summarize operating state times
             self.document.add_heading("Calculated AHU Mode Statistics")
         
-            for sensor in self.calculator.pseudo_sensors:
+            for sensor in self.fault.sensors:
                 (days, hours, percent) = sensor.op_time
 
                 self.document.add_paragraph(
@@ -321,7 +291,16 @@ class DocumentGenerator:
                 self.document.add_paragraph(
                     f'Total percent time while AHU is in {sensor.long_name}: {percent}%',
                     style="List Bullet")
+        else: # just summarize temperature levels for different temp sensors
+            self.document.add_heading('Summary Statistics filtered for when the AHU is running', level=1)
 
+            for sensor in self.fault.sensors:
+                if sensor.measurement == 'temperature': # only temp sensors
+                    self.document.add_heading(sensor.short_name, level=3)
+                    self.document.add_paragraph(
+                        str(self.calculator.df_motor_on_filtered[sensor.col_name].describe()),
+                        style = 'List Bullet'
+                        )
 
     def format_suggestion(self):
         self.document.add_heading("Suggestions based on data analysis", level=3)
@@ -329,10 +308,10 @@ class DocumentGenerator:
         suggestion_string = 'The amount of time this fault is True is'
 
         if self.calculator.percent_in_fault_mode > 5.0:
-            suggestion_string = f'high, indicating {suggestion_string} {self.fault.suggestion_high_fault}.'
+            suggestion_string = f'{suggestion_string} high, indicating {self.fault.suggestion_high_fault}.'
                 
         else:
-            suggestion_string = f'low, indicating {suggestion_string} {self.fault.suggestion_low_fault}.'
+            suggestion_string = f'{suggestion_string} low, indicating {self.fault.suggestion_low_fault}.'
 
         self.document.add_paragraph(suggestion_string, style="List Bullet")
 
@@ -371,7 +350,7 @@ slist = [['mat', 'mixing air temperature', 'temperature', '°F', 'Mix Temp'],
         ['heating_mode', 'heating mode','operating state', 'flag','Heat'],
         ['econ_only_cooling_mode','economizing mode','operating state', 'flag','Econ Clg'],
         ['econ_plus_mech_cooling_mode','economizing plus mechanical cooling mode','operating state', 'flag','Econ + Mech Clg'],
-        ['mech_cooling_only_mode','mechanical cooling mode','operating state', 'flag','Clg']
+        ['mech_cooling_only_mode','mechanical cooling mode','operating state', 'flag','Mech Clg']
     ]
 
 ALL_SENSORS = [Sensor(**dict(zip(sensor_attrs, sensor))) for sensor in slist]
@@ -398,7 +377,7 @@ fault_defs = [
         'the AHU temperature sensors are within calibration'
         ],
 
-    [4, ['economizer_sig','heating_sig','cooling_sig'], 
+    [4, ['heating_mode', 'econ_only_cooling_mode', 'econ_plus_mech_cooling_mode', 'mech_cooling_only_mode'],
         'flags AHU control programming that is hunting between heating, economizing, economizing plus mechanical cooling, and mechanical cooling operating states. This fault diagnostic does NOT flag simultaneous heating and cooling, just excessive cycling between AHU operating modes',
         'the AHU control system needs tuning to reduce control loop hunting for setpoints. It is hunting or overshooting setpoints which can cause AHU systems to be oscillating (most likely too fast) between heating and cooling modes without never settling out. Low load conditions can also cause excessive cycling if heating or cooling setpoints are met very fast. Verify that the times when this fault is flagged that no occupant comfort issues persist. Fixing this fault may also improve energy efficiency and extend the mechanical equipment life span with the prevention of excessive cycling especially cooling compressors',
         'no control system tuning appears to be needed for the operating conditions of this AHU'
@@ -467,7 +446,7 @@ class Report:
         #         fault = fault
         self.fault = next((fault for fault in ALL_FAULTS if fault.num == fault_num), None)
 
-        self.calculator = Calculator(self.fault, df, op_mode_cols = op_mode_cols)
+        self.calculator = Calculator(self.fault, df)
         self.document_generator = DocumentGenerator(self.fault, df, self.calculator)
 
         self.document = self.document_generator.create_document(path)
@@ -477,92 +456,3 @@ class Report:
     def save_report(self):
 
         self.document.save(self.path)
-        # breakpoint()
-
-
-# test run:
-
-
-# FAULT_NUM = 4
-
-# if FAULT_NUM == 2:
-#     # -------------------- FC 2
-#     OUTDOOR_DEGF_ERR_THRES = 5.
-#     MIX_DEGF_ERR_THRES = 5.
-#     RETURN_DEGF_ERR_THRES = 2.
-
-#     from faults import FaultConditionTwo
-#     FAULT_CONDITION = FaultConditionTwo(
-#         OUTDOOR_DEGF_ERR_THRES,
-#         MIX_DEGF_ERR_THRES,
-#         RETURN_DEGF_ERR_THRES,
-#         "mat",
-#         "rat",
-#         "oat",
-#         "supply_vfd_speed"
-#     )
-
-# elif FAULT_NUM == 10:
-#     #-------------------- FC 10
-#     # ADJUST this param for the AHU MIN OA damper stp
-#     AHU_MIN_OA = 20
-
-#     # G36 params shouldnt need adjusting
-#     # error threshold parameters
-#     OAT_DEGF_ERR_THRES = 5
-#     MAT_DEGF_ERR_THRES = 5
-
-#     from faults import FaultConditionTen
-#     FAULT_CONDITION = FaultConditionTen(
-#         OAT_DEGF_ERR_THRES,
-#         MAT_DEGF_ERR_THRES,
-#         "mat",
-#         "oat",
-#         "clg",
-#         "economizer_sig",
-#     )
-
-# elif FAULT_NUM == 4:
-
-#     # -------------------- FC 4
-#     # G36 params COULD need adjusting
-#     # default OS MAX state changes is 7
-#     # which seems high, could be worth adjusting 
-#     # down to 4 to see what the faults look like
-#     DELTA_OS_MAX = 7
-
-#     # ADJUST this param for the AHU MIN OA damper stp
-#     AHU_MIN_OA = 20
-
-#     from faults import FaultConditionFour
-#     FAULT_CONDITION = FaultConditionFour(
-#         DELTA_OS_MAX,
-#         AHU_MIN_OA,
-#         "economizer_sig",
-#         "heating_sig",
-#         "cooling_sig",
-#         "supply_vfd_speed"
-#     )
-
-# DF = pd.read_csv(f"ahu_data/hvac_random_fake_data/fc{FAULT_NUM}_fake_data1.csv", index_col="Date", parse_dates=True).rolling("5T").mean()
-
-# df2 = FAULT_CONDITION.apply(DF)
-
-# # FAULT_OBJ = [fault for fault in ALL_FAULTS if fault.num == FAULT_NUM][0]
-
-# # these should be col_name, display name
-# fc4_op_modes = ['heating_mode', 'econ_only_cooling_mode', 'econ_plus_mech_cooling_mode', 'mech_cooling_only_mode']
-
-# # calculator = Calculator(FAULT_OBJ, df2, op_mode_cols = fc4_op_modes)
-# # document_generator = DocumentGenerator(FAULT_OBJ, df2)
-
-# # # dataset_fig = document_generator.create_dataset_plot()
-# # # hist_fig = document_generator.create_hist_plot()
-# # # fig = document_generator_generator.create_dataset_plot()
-# # # plt.show()
-
-# # document = document_generator.create_document('blah', calculator)
-# # document.save(f"test_fc{FAULT_NUM}.docx")
-
-
-# report = Report(FAULT_NUM, df2, f"test_fc{FAULT_NUM}.docx", op_mode_cols = fc4_op_modes)
