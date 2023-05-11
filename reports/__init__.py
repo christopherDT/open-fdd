@@ -55,29 +55,16 @@ class Fault(BaseModel):
     suggestion_low_fault: str
 
     def __init__(self, col_names, **data):
-        # do this so we can get the sensors from ALL_SENSORS whose col_names match the provided col_name
+        # do this so we can create the sensor objects from ALL_SENSORS whose col_names match the provided col_name
         super().__init__(sensors = [sensor for sensor in ALL_SENSORS if sensor.col_name in col_names],**data)
 
-
-    # def__init__(self, num: int, definition: str, col_names: list):
-    #     self.num = num
-    #     self.definition = definition
-    #     self.sensors = [sensor for sensor in ALL_SENSORS if sensor.col_name in col_names]
-
-
-# fault -- data cols, non-data cols
-
-# class OperationMode(BaseModel):
-#     col_name: str
-#     name: str
-#     stats: tuple
+        # super().__init__(sensors = [Sensor(**dict(zip(sensor_attrs, sensor_def))) for sensor_def in sensor_defs if sensor_def[0] in col_names], **data)
 
 class Calculator:
     """
-    Calculates the data fed to the report. Assumes 'supply_vfd_speed' col exists.
+    Calculates the data fed to the report. Assumes 'supply_vfd_speed' col exists in the df.
     """
-    def __init__(self, fault, df):
-        # self.fault = fault
+    def __init__(self, fault: Fault, df: pd.DataFrame):
         self.df = df
         self.fault_col = f"fc{fault.num}_flag"
 
@@ -126,9 +113,6 @@ class Calculator:
 
         self.df_motor_on_filtered = self.df[self.df['supply_vfd_speed'] > 1.0]
 
-
-# for op modes, create a pseudo-sensor, add them as sensors to the Fault! then we can plot those
-
 class DocumentGenerator:
     """Class provides the skeleton for creating a report document."""
 
@@ -141,9 +125,9 @@ class DocumentGenerator:
 
     def create_dataset_plot(self) -> plt:
         """
-        Creates combination timeseries and fault flag plots. Does so by grouping this fault's sensors 
-        according to their measurement type, creates one plot per measurement type, and one plot to
-        show the fault flag.
+        Creates timeseries data plots. Does so by grouping this fault's sensors 
+        according to their measurement type, creates one plot per measurement type, and
+        flags the fault locations in blue.
         """
 
         # group sensors of interest by measurement type
@@ -434,17 +418,12 @@ fault_defs = [
         'the AHU cooling valve operates as expected']
 ]
 
-
-ALL_FAULTS = [Fault(**dict(zip(fault_attrs,fault_def))) for fault_def in fault_defs]
-
-
 class Report:
     def __init__(self, fault_num: int, df: pd.DataFrame, path: str, op_mode_cols: list = None):
 
-        # for fault in ALL_FAULTS:
-        #     if fault.num == fault_num:
-        #         fault = fault
-        self.fault = next((fault for fault in ALL_FAULTS if fault.num == fault_num), None)
+        fault_def = next((fault_def for fault_def in fault_defs if fault_def[0] == fault_num))
+
+        self.fault = Fault(**dict(zip(fault_attrs, fault_def))) 
 
         self.calculator = Calculator(self.fault, df)
         self.document_generator = DocumentGenerator(self.fault, df, self.calculator)
@@ -454,5 +433,4 @@ class Report:
         self.path = path
 
     def save_report(self):
-
         self.document.save(self.path)
