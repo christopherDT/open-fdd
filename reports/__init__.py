@@ -1,3440 +1,568 @@
+import pandas as pd
+import numpy as np
+from pydantic import BaseModel
+from typing import Optional
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from docx import Document
+from docx.shared import Inches
 import math
 import os
 import time
 from io import BytesIO
-import numpy as np
-
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
-import pandas as pd
-from docx import Document
-from docx.shared import Inches
-
-from faults import FaultConditionOne
-
-
-class FaultCodeOneReport:
-    """Class provides the definitions for Fault Code 1 Report."""
-
-    def __init__(
-        self,
-        vfd_speed_percent_err_thres: float,
-        vfd_speed_percent_max: float,
-        duct_static_inches_err_thres: float,
-        duct_static_col: str,
-        supply_vfd_speed_col: str,
-        duct_static_setpoint_col: str,
-    ):
-        self.vfd_speed_percent_err_thres = vfd_speed_percent_err_thres
-        self.vfd_speed_percent_max = vfd_speed_percent_max
-        self.duct_static_inches_err_thres = duct_static_inches_err_thres
-        self.duct_static_col = duct_static_col
-        self.duct_static_setpoint_col = duct_static_setpoint_col
-        self.fan_vfd_speed_col = supply_vfd_speed_col
-
-    def create_fan_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-        if output_col is None:
-            output_col = "fc1_flag"
-
-        df[output_col] = df[output_col].astype(int)
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 1 Plot')
-
-        ax1.plot(df.index, df[self.duct_static_col], label="STATIC")
-        ax1.legend(loc='best')
-        ax1.set_ylabel("Inch WC")
-
-        ax2.plot(df.index, df[self.fan_vfd_speed_col],
-                 color="g", label="FAN")
-        ax2.legend(loc='best')
-        ax2.set_ylabel('%')
-
-        ax3.plot(df.index, df[output_col], label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc1_flag"
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc1_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_duct_static = round(
-            df[self.duct_static_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-
-        return (
-            total_days,
-            total_hours,
-            hours_fc1_mode,
-            percent_true,
-            percent_false,
-            flag_true_duct_static,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame, output_col: str = None, duct_static_col: str = None
-    ) -> plt:
-        if output_col is None:
-            output_col = "fc1_flag"
-        if duct_static_col is None:
-            duct_static_col = "duct_static"
-        # calculate dataset statistics
-        df["hour_of_the_day_fc1"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc3
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc1.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 1 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc1_flag"
-
-        df[output_col] = df[output_col].astype(int)
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition One Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition one of ASHRAE Guideline 36 is related to flagging poor performance of a AHU variable supply fan attempting to control to a duct pressure setpoint. Fault condition equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc1_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_fan_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc1_mode,
-            percent_true,
-            percent_false,
-            flag_true_duct_static,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        ) = self.summarize_fault_times(df, output_col=output_col)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc1_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-            paragraph.style = "List Bullet"
-            paragraph.add_run(
-                f'Average duct system pressure for when in fault condition (fan VFD speed > 95%): {flag_true_duct_static}"WC'
-            )
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics of fan operation
-        document.add_heading("VFD Speed", level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            str(df_motor_on_filtered[self.fan_vfd_speed_col].describe()))
-
-        # ADD in Summary Statistics of duct pressure
-        document.add_heading("Duct Pressure", level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            str(df_motor_on_filtered[self.duct_static_col].describe()))
-
-        # ADD in Summary Statistics of duct pressure
-        document.add_heading("Duct Pressure Setpoint", level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            str(df_motor_on_filtered[self.duct_static_setpoint_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                "The percent True metric that represents the amount of time for when the fault flag is True is high indicating the fan is running at high speeds and appearing to not generate good duct static pressure"
-            )
-
-        else:
-            paragraph.add_run(
-                "The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the fan appears to generate good duct static pressure"
-            )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if df[self.duct_static_setpoint_col].std() == 0:
-            paragraph.add_run("No duct pressure setpoint reset detected (BAD)")
-
-        else:
-            paragraph.add_run("Duct pressure reset detected (Good)")
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeTwoReport:
-    """Class provides the definitions for Fault Code 2 Report."""
-
-    def __init__(
-        self,
-        mix_degf_err_thres: float,
-        return_degf_err_thres: float,
-        outdoor_degf_err_thres: float,
-        mat_col: str,
-        rat_col: str,
-        oat_col: str,
-        fan_vfd_speed_col: str,
-    ):
-        self.mix_degf_err_thres = mix_degf_err_thres
-        self.return_degf_err_thres = return_degf_err_thres
-        self.outdoor_degf_err_thres = outdoor_degf_err_thres
-        self.mat_col = mat_col
-        self.rat_col = rat_col
-        self.oat_col = oat_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-        if output_col is None:
-            output_col = "fc2_flag"
-
-        df[output_col] = df[output_col].astype(int)
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 2 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.mat_col],
-                           color='r', label="Mix Temp")  # red
-
-        plot1b, = ax1.plot(df.index, df[self.rat_col],
-                           color='b', label="Return Temp")  # blue
-
-        plot1c, = ax1.plot(df.index, df[self.oat_col],
-                           color='g', label="Out Temp")  # green
-
-        ax1.legend(loc='best')
-        ax1.set_ylabel("°F")
-
-        ax2.plot(df.index, df[output_col], label="Fault", color="k")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Fault Flags')
-        ax2.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc2_flag"
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-        # print("DAYS ALL DATA: ", total_days)
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-        # print("TOTAL HOURS: ", total_hours)
-        hours_fc2_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-        # print("FALT FLAG TRUE TOTAL HOURS: ", hours_fc1_mode)
-        percent_true = round(df[output_col].mean() * 100, 2)
-        # print("PERCENT TIME WHEN FLAG IS TRUE: ", percent_true, "%")
-        percent_false = round((100 - percent_true), 2)
-        # print("PERCENT TIME WHEN FLAG 5 FALSE: ", percent_false, "%")
-
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_oat = round(
-            df[self.oat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_rat = round(
-            df[self.rat_col].where(df[output_col] == 1).mean(), 2
-        )
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        return (
-            total_days,
-            total_hours,
-            hours_fc2_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_oat,
-            flag_true_rat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        mat_col: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc2_flag"
-
-        if mat_col is None:
-            mat_col = "mat"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc2"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc3
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc2.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 2 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc2_flag"
-
-        df[output_col] = df[output_col].astype(int)
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Two Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition two and three of ASHRAE Guideline 36 is related to flagging mixing air temperatures of the AHU that are out of acceptable ranges. Fault condition 2 flags mixing air temperatures that are too low and fault condition 3 flags mixing temperatures that are too high when in comparision to return and outside air data. The mixing air temperatures in theory should always be in between the return and outside air temperatures ranges. Fault condition two equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc2_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc2_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_oat,
-            flag_true_rat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc2_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 2 is True the average mix air temp is {flag_true_mat}°F, outside air temp is {flag_true_oat}°F, and return air temp is {flag_true_rat}°F. This could possibly help with pin pointing AHU operating conditions for when this fault is True.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Mix Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Return Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.rat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Outside Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.oat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5:
-
-            paragraph.add_run(
-                'The percent True of time in fault condition 2 or 3 is high indicating the AHU temperature sensors are out of calibration')
-
-        else:
-            paragraph.add_run(
-                'The percent True of time is low inidicating the AHU temperature sensors are within calibration')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeThreeReport:
-    """Class provides the definitions for Fault Code 3 Report."""
-
-    def __init__(
-        self,
-        mix_degf_err_thres: float,
-        return_degf_err_thres: float,
-        outdoor_degf_err_thres: float,
-        mat_col: str,
-        rat_col: str,
-        oat_col: str,
-        fan_vfd_speed_col: str,
-    ):
-        self.mix_degf_err_thres = mix_degf_err_thres
-        self.return_degf_err_thres = return_degf_err_thres
-        self.outdoor_degf_err_thres = outdoor_degf_err_thres
-        self.mat_col = mat_col
-        self.rat_col = rat_col
-        self.oat_col = oat_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-        if output_col is None:
-            output_col = "fc3_flag"
-
-        df[output_col] = df[output_col].astype(int)
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 3 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.mat_col],
-                           color='r', label="Mix Temp")  # red
-
-        plot1b, = ax1.plot(df.index, df[self.rat_col],
-                           color='b', label="Return Temp")  # blue
-
-        plot1c, = ax1.plot(df.index, df[self.oat_col],
-                           color='g', label="Out Temp")  # green
-
-        ax1.legend(loc='best')
-        ax1.set_ylabel("°F")
-
-        ax2.plot(df.index, df[output_col], label="Fault", color="k")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Fault Flags')
-        ax2.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc3_flag"
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-        # print("DAYS ALL DATA: ", total_days)
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-        # print("TOTAL HOURS: ", total_hours)
-        hours_fc3_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-        # print("FALT FLAG TRUE TOTAL HOURS: ", hours_fc1_mode)
-        percent_true = round(df[output_col].mean() * 100, 2)
-        # print("PERCENT TIME WHEN FLAG IS TRUE: ", percent_true, "%")
-        percent_false = round((100 - percent_true), 2)
-        # print("PERCENT TIME WHEN FLAG 5 FALSE: ", percent_false, "%")
-
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_oat = round(
-            df[self.oat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_rat = round(
-            df[self.rat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-
-        return (
-            total_days,
-            total_hours,
-            hours_fc3_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_oat,
-            flag_true_rat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        mat_col: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc3_flag"
-
-        if mat_col is None:
-            mat_col = "mat"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc3"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc3
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc3.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 3 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc3_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Three Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition two and three of ASHRAE Guideline 36 is related to flagging mixing air temperatures of the AHU that are out of acceptable ranges. Fault condition 2 flags mixing air temperatures that are too low and fault condition 3 flags mixing temperatures that are too high when in comparision to return and outside air data. The mixing air temperatures in theory should always be in between the return and outside air temperatures ranges. Fault condition three equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc3_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc3_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_oat,
-            flag_true_rat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc3_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 3 is True the average mix air temp is {flag_true_mat}°F, outside air temp is {flag_true_oat}°F, and return air temp is {flag_true_rat}°F. This could possibly help with pin pointing AHU operating conditions for when this fault is True.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Mix Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Return Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.rat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Outside Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.oat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5:
-
-            paragraph.add_run(
-                'The percent True of time in fault condition 2 or 3 is high indicating the AHU temperature sensors are out of calibration')
-
-        else:
-            paragraph.add_run(
-                'The percent True of time is low inidicating the AHU temperature sensors are within calibration')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeFourReport:
-    """Class provides the definitions for Fault Code 4 Report.
-        Reporting the time series avg df that calculates control states per hour
+from num2words import num2words
+import itertools
+
+
+class Sensor(BaseModel):
+    """Gives the different attributes for relevant sensors used in each fault.
+
+    Atrributes:
+        col_name            The standard column name any time this sensor is in a Pandas data frame
+        long_name           The standard full sensor name, how it's referred to in fault reports
+        measurement         How the sensor is measured (temperature, percent, pressure, etc.)
+        short_name          The sensor's corresponding short name, mainly used for legends in graphs
+    """
+    col_name: str
+    long_name: str
+    measurement: str
+    units: str
+    short_name: Optional[str] = None
+    avg_fault_val: Optional[float] = None
+    op_time: Optional[list] = None
+
+    def __init__(self,**data):
+        super().__init__(**data)
+        if 'short_name' not in data.keys():
+            super().__init__(short_name = data['long_name'].title(),**data)
+
+class Fault(BaseModel):
+    """
+    Gives a fault's relevant attributes for generating final reports.
+
+    Attributes:
+        num                     The fault number as an integer
+        definition              The text description for the fault's definition
+        sensors                 All of the fault's relevant sensors (not including supply_vfd_speed, which is always assumed to exist)
+        suggestion_fault_high   Text to display if this fault occurs too often
+        suggestion_fault_low    Text to display if this fault does not occur too often
 
     """
+    num: int
+    definition: str
+    sensors: list
+    suggestion_high_fault: str
+    suggestion_low_fault: str
 
-    def __init__(self,
-                 delta_os_max: float
-                 ):
-        self.delta_os_max = delta_os_max
-        self.heating_mode_calc_col = 'heating_mode'
-        self.econ_only_cooling_mode_calc_col = 'econ_only_cooling_mode'
-        self.econ_plus_mech_cooling_mode_calc_col = 'econ_plus_mech_cooling_mode'
-        self.mech_cooling_only_mode_calc_col = 'mech_cooling_only_mode'
+    def __init__(self, col_names, **data):
+        # do this so we can get the sensors from ALL_SENSORS whose col_names match the provided col_name
+        super().__init__(sensors = [sensor for sensor in ALL_SENSORS if sensor.col_name in col_names],**data)
 
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
 
-        if output_col is None:
-            output_col = "fc4_flag"
+    # def__init__(self, num: int, definition: str, col_names: list):
+    #     self.num = num
+    #     self.definition = definition
+    #     self.sensors = [sensor for sensor in ALL_SENSORS if sensor.col_name in col_names]
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 4 Plots')
 
-        plot1a, = ax1.plot(df.index,
-                           df[self.heating_mode_calc_col],
-                           label="Heat",
-                           color='orange')  # orange
+# fault -- data cols, non-data cols
 
-        plot1b, = ax1.plot(df.index,
-                           df[self.econ_only_cooling_mode_calc_col],
-                           label="Econ Clg",
-                           color='olive')  # olive
 
-        plot1c, = ax1.plot(df.index,
-                           df[self.econ_plus_mech_cooling_mode_calc_col],
-                           label="Econ + Mech Clg",
-                           color='c')  # cyan
+class OperationMode(BaseModel):
+    col_name: str
+    name: str
+    stats: tuple
 
-        plot1d, = ax1.plot(df.index,
-                           df[self.mech_cooling_only_mode_calc_col],
-                           label="Mech Clg",
-                           color='m')  # black
+class Calculator:
+    """Calculates the data fed to the report. Assumes 'supply_vfd_speed' col exists.
+        Attributes:
+            op_mode_cols    List of operation mode columns to summarize for amount of time spent in each. Optional, whereupon this function only provides the total time in the dataset and the time in the fault mode.
 
-        ax1.set_xlabel('Date')
-        ax1.set_ylabel('Calculated AHU Operating States')
-        ax1.legend(loc='best')
-
-        ax2.plot(df.index, df[output_col], label="Fault", color="k")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Fault Flags')
-        ax2.legend(loc='best')
-
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-
-        if output_col is None:
-            output_col = "fc4_flag"
-
-        # calculate dataset statistics
-        delta_all_data = df.index.to_series().diff()
-
-        total_days_all_data = round(
-            delta_all_data.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours_all_data = delta_all_data.sum() / pd.Timedelta(hours=1)
-
-        hours_fc4_mode = (
-            delta_all_data * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true_fc4 = round(df.fc4_flag.mean() * 100, 2)
-        percent_false_fc4 = round((100 - percent_true_fc4), 2)
-
-        # heating mode runtime stats
-        delta_heating = df[self.heating_mode_calc_col].index.to_series(
-        ).diff()
-        total_hours_heating = (
-            delta_heating * df[self.heating_mode_calc_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_heating = round(
-            df[self.heating_mode_calc_col].mean() * 100, 2)
-
-        # econ mode runtime stats
-        delta_econ = df[self.econ_only_cooling_mode_calc_col].index.to_series(
-        ).diff()
-        total_hours_econ = (
-            delta_econ * df[self.econ_only_cooling_mode_calc_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_econ = round(
-            df[self.econ_only_cooling_mode_calc_col].mean() * 100, 2)
-
-        # econ plus mech cooling mode runtime stats
-        delta_econ_clg = df[self.econ_plus_mech_cooling_mode_calc_col].index.to_series(
-        ).diff()
-
-        total_hours_econ_clg = (
-            delta_econ_clg * df[self.econ_plus_mech_cooling_mode_calc_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_econ_clg = round(
-            df[self.econ_plus_mech_cooling_mode_calc_col].mean() * 100, 2)
-
-        # mech clg mode runtime stats
-        delta_clg = df[self.mech_cooling_only_mode_calc_col].index.to_series(
-        ).diff()
-
-        total_hours_clg = (
-            delta_clg * df[self.mech_cooling_only_mode_calc_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_clg = round(
-            df[self.mech_cooling_only_mode_calc_col].mean() * 100, 2)
-
-        return (
-            total_days_all_data,
-            total_hours_all_data,
-            hours_fc4_mode,
-            percent_true_fc4,
-            percent_false_fc4,
-            percent_clg,
-            percent_econ_clg,
-            percent_econ,
-            percent_heating,
-            total_hours_heating,
-            total_hours_econ,
-            total_hours_econ_clg,
-            total_hours_clg
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc4_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc4"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc4
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc4.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 4 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-        if output_col is None:
-            output_col = "fc4_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Four Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition four of ASHRAE Guideline 36 is related to flagging AHU control programming that is hunting between heating, economizing, economizing plus mechanical cooling, and mechanical cooling operating states. This fault diagnostic does NOT flag simultaneous heating and cooling, just excessive cycling between the states or operating modes the AHU maybe going in and out of. Fault condition four equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc4_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days_all_data,
-            total_hours_all_data,
-            hours_fc4_mode,
-            percent_true_fc4,
-            percent_false_fc4,
-            percent_clg,
-            percent_econ_clg,
-            percent_econ,
-            percent_heating,
-            total_hours_heating,
-            total_hours_econ,
-            total_hours_econ_clg,
-            total_hours_clg
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days_all_data}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours_all_data}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc4_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true_fc4}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false_fc4}%"
-        )
-
-        document.add_heading("Calculated AHU Mode Statistics", level=2)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total time in hours while AHU is in a heating mode: {total_hours_heating}')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total percent time in while AHU is in a heating mode: {percent_heating}%')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total time in hours while AHU is in a economizing mode: {total_hours_econ}')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total percent time in while AHU is in a economizing mode: {percent_econ}%')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total time in hours while AHU is in a economizing plus mechanical cooling mode: {total_hours_econ_clg}')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total percent time in while AHU is in a economizing plus mechanical cooling mode: {percent_econ_clg}%')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total time in hours while AHU is in a mechanical cooling mode: {total_hours_clg}')
-
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(
-            f'Total percent time in while AHU is in a mechanical cooling mode: {percent_clg}%')
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'Fault condition 4 is True because of excessive cycling between different control system operation modes.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        paragraph = document.add_paragraph()
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if fc_max_faults_found >= self.delta_os_max:
-
-            paragraph.add_run(
-                f'The AHU control system needs tuning to reduce control loop hunting for setpoints. Its hunting or overshooting setpoints which can cause AHU systems to be oscillating (most likely too fast) between heating and cooling modes without never settling out. Low load conditions can also cause excessive cycling if heating or cooling setpoints are met very fast. Verify that the times when this fault is flagged that no occupant comfort issues persist. Fixing this fault may also improve energy efficiency and extend the mechanical equipment life span with the prevention of excessive cycling especially cooling compressors.')
-
-        else:
-            paragraph.add_run(
-                f'No control system tuning appears to be needed for the operating conditions of this AHU.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeFiveReport:
-    """Class provides the definitions for Fault Code 5 Report."""
-
-    def __init__(
-        self,
-        mix_degf_err_thres: float,
-        supply_degf_err_thres: float,
-        delta_t_supply_fan: float,
-        mat_col: str,
-        sat_col: str,
-        htg_vlv_col: str,
-        fan_vfd_speed_col: str
-    ):
-        self.mix_degf_err_thres = mix_degf_err_thres
-        self.supply_degf_err_thres = supply_degf_err_thres
-        self.delta_t_supply_fan = delta_t_supply_fan
-        self.mat_col = mat_col
-        self.sat_col = sat_col
-        self.htg_vlv_col = htg_vlv_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-        if output_col is None:
-            output_col = "fc5_flag"
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 5 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.mat_col],
-                           color='g', label="Mix Temp")
-
-        plot1b, = ax1.plot(df.index, df[self.sat_col],
-                           color='b', label="Supply Temp")
-
-        ax1.legend(loc='best')
-        ax1.set_ylabel("°F")
-
-        ax2.plot(df.index, df[self.htg_vlv_col], label="Htg Valve", color="r")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('%')
-        ax2.legend(loc='best')
-
-        ax3.plot(df.index, df[output_col], label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc5_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc5_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_sat = round(
-            df[self.sat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-
-        return (
-            total_days,
-            total_hours,
-            hours_fc5_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        mat_col: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc5_flag"
-
-        if mat_col is None:
-            mat_col = "mat"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc5"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc5
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc5.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 5 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc5_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Five Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition five of ASHRAE Guideline 36 is (an AHU heating mode or winter time conditions only fault equation) related to flagging supply air temperatures that are out of acceptable ranges based on the mix air temperature and an assumption for heat created by the AHU supply fan in the air stream. Fault condition five equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc5_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc5_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc5_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 5 is True the average mix air temp is {flag_true_mat}°F and the outside air temp is {flag_true_sat}°F. This could possibly help with pin pointing AHU operating conditions for when this fault is True.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-        document.add_heading('Mix Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.sat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating the AHU temperature sensors for either the supply or mix temperature are out of calibration. Verify the mixing temperature sensor is not a probe type sensor but a long averaging type sensor that is installed properly inside the AHU mixing chamber to get a good solid true reading of the actual air mixing temperature. Poor duct design may also contribute to not having good air mixing, to troubleshoot install data loggers inside the mixing chamber or take measurements when the AHU is running of different locations in the mixing chamber to spot where better air blending needs to take place.')
-
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU temperature sensors are within calibration')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeSixReport:
-    """Class provides the definitions for Fault Code 5 Report."""
-
-    def __init__(
-        self,
-        vav_total_flow: str,
-        mat_col: str,
-        oat_col: str,
-        rat_col: str,
-        fan_vfd_speed_col: str
-    ):
-
-        self.vav_total_flow = vav_total_flow
-        self.mat_col = mat_col
-        self.oat_col = oat_col
-        self.rat_col = rat_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-        
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-        if output_col is None:
-            output_col = "fc6_flag"
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 6 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.mat_col],
-                        label="Mix Temp")
-
-        plot1b, = ax1.plot(df.index, df[self.oat_col],
-                        label="Out Temp")
-        
-        plot1c, = ax1.plot(df.index, df[self.rat_col],
-                        label="Return Temp")
-
-        ax1.legend(loc='best')
-        ax1.set_ylabel("°F")
-        
-        ax2.plot(df.index, df[self.vav_total_flow],
-                 label="Total Air Flow", color="r")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('CFM')
-        ax2.legend(loc='best')
-
-        ax3.plot(df.index, df[output_col], label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc6_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc5_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_rat = round(
-            df[self.rat_col].where(df[output_col] == 1).mean(), 2
-        )
-        
-        flag_true_oat = round(
-            df[self.oat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc5_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_rat,
-            flag_true_oat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc6_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc6"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc6
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc6.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 6 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc6_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Six Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition six of ASHRAE Guideline 36 is an attempt at verifying that AHU design minimum outside air is close to the calculated outside air fraction through the outside, mix, and return air temperature sensors. A fault will get flagged if the OA fraction is too low or too high as to compared to design OA. Fault condition six equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc6_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc6_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_rat,
-            flag_true_oat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc6_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-        
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 6 is True the average AHU mix air temperature {flag_true_mat}°F, outside air temperature is {flag_true_oat}°F, and the return air temperature is {flag_true_rat}°F. This could possibly help with pin pointing AHU operating conditions for when this AHU is drawing in excessive outside air.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Mix Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Outside Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.oat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent true metric maybe yeilding sensors are out of calibration either on the AHU outside, mix, or return air temperature sensors that handle the OA fraction calculation or the totalized air flow calculation handled by a totalizing all VAV box air flows or AHU AFMS. Air flow and/or AHU temperature sensor may require recalibration.')
-
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the sensors are within calibration')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeSevenReport:
-    """Class provides the definitions for Fault Code 7 Report.
-        Very similar to FC 13 but uses heating valve
     """
+    def __init__(self, fault, df, op_mode_cols: list = None):
+        self.fault = fault
+        self.df = df
+        self.fault_col = f"fc{self.fault.num}_flag"
+        self.op_mode_cols = op_mode_cols
 
-    def __init__(
-        self,
-        sat_col: str,
-        satsp_col: str,
-        htg_col: str,
-        fan_vfd_speed_col: str
-    ):
-        self.sat_col = sat_col
-        self.satsp_col = satsp_col
-        self.htg_col = htg_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
+        # compile op_mode_cols as pseudo-sensors
+        if self.op_mode_cols:
+            self.pseudo_sensors = [sensor for sensor in ALL_SENSORS if sensor.col_name in op_mode_cols]
 
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
+        self.compile_stats()
 
-        if output_col is None:
-            output_col = "fc7_flag"
+    def summarize_avg_faults(self):
+        """
+        Store each sensor's average fault value as an attribute of that sensor.
+        """
+        for sensor in self.fault.sensors:
+            sensor.avg_fault_val = round(self.df[sensor.col_name].where(self.df[self.fault_col] == 1).mean(), 2)
 
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 7 Plot')
+    def summarize_operational_time(self, df):
+        """
+        Summarize the times this df is in the provided modes. Only works for boolean cols indexing when the mode is active, where 1 is "active" and 0 is "not active".
+        """
+        delta = df.index.to_series().diff()
+        time_in_mode = (delta * df).sum()
 
-        plot1a, = ax1.plot(df.index, df[self.sat_col], label="SAT")
-        plot1b, = ax1.plot(df.index, df[self.satsp_col], label="SATsp")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Supply Temps °F')
+        days_in_mode = round(time_in_mode / pd.Timedelta(days=1), 2)
+        hours_in_mode = time_in_mode / pd.Timedelta(hours=1)
+        percent_in_mode = round(df.mean() * 100, 2)
 
-        ax2.plot(df.index, df[self.htg_col], color="r",
-                 label="AHU Heat Vlv")
-        ax2.legend(loc='best')
-        ax2.set_ylabel('%')
+        return(days_in_mode, hours_in_mode, percent_in_mode)
 
-        ax3.plot(df.index, df.fc7_flag, label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
+    def compile_stats(self):
+        """
+        Compile the relevant stats. These are summary stats for relevant data, as well as operational times for different operation modes.
+        """
+        df = self.df
+
+        df['ident'] = 1 # to get total op time in the df
+        df['motor_on'] = df['supply_vfd_speed'].gt(1.).astype(int)
+
+        self.total_days, self.total_hours, __ = self.summarize_operational_time(df['ident'])
+        __, self.hours_in_fault_mode, self.percent_in_fault_mode = self.summarize_operational_time(df[self.fault_col])
+        __, self.hours_motor_runtime, __ = self.summarize_operational_time(df['motor_on'])
+
+        if self.op_mode_cols:
+            for sensor in self.pseudo_sensors:
+                sensor.op_time = self.summarize_operational_time(df[sensor.col_name])
+
+        self.summarize_avg_faults()
+
+        self.df_motor_on_filtered = self.df[self.df['supply_vfd_speed'] > 1.0]
+
+
+# for op modes, create a pseudo-sensor, add them as sensors to the Fault! then we can plot those
+
+class DocumentGenerator:
+    """Class provides the skeleton for creating a report document."""
+
+    def __init__(self, fault: int, df: pd.DataFrame, calculator: Calculator):
+        self.fault = fault
+        self.df = df
+        self.df['fault_flag'] = self.df[f'fc{self.fault.num}_flag']
+        self.document = Document()
+        self.calculator = calculator
+
+    def create_dataset_plot(self) -> plt:
+        """
+        Creates combination timeseries and fault flag plots. Does so by grouping this fault's sensors 
+        according to their measurement type, creates one plot per measurement type, and one plot to
+        show the fault flag.
+        """
+
+        data_sensors = self.calculator.pseudo_sensors if self.calculator.op_mode_cols else self.calculator.fault.sensors
+
+        # group sensors of interest by measurement type
+        grouped_sensors = []
+        for key, group in itertools.groupby(data_sensors, key=lambda x: x.measurement):
+            grouped_sensors.append(list(group))
+
+        n_groups = len(grouped_sensors)
+
+        # fig, (*data_axes, fault_flag_ax) = plt.subplots(n_groups + 1, 1, figsize=(25, 8))
+        fig, data_axes = plt.subplots(n_groups, 1, figsize=(25, 4*n_groups))
+        # plt.title(f'Fault Condition {self.fault.num} Plot')
+
+        # group df by runs of values in a col: 
+        # ttps://towardsdatascience.com/pandas-dataframe-group-by-consecutive-certain-values-a6ed8e5d8cc
+        fault_grouping = self.df[self.df['fault_flag'] == 1].groupby((self.df['fault_flag'] != 1).cumsum())
+
+        # plt.rcParams["axes.prop_cycle"] = plt.cycler("color", plt.cm.tab10c.colors)
+        # cmap_list = ['Dark2', 'Set1', 'Set2', 'tab10'] # reasonable contrasting colormaps to use
+
+        # data_axes groups the different axes by measurement, so they can be graphed on similar scales
+        if n_groups > 1:
+            for i in range(n_groups):
+                group = grouped_sensors[i]
+                for sensor in group:
+                    data_axes[i].plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
+
+                    # highlight each span of faults
+                    for k, v in fault_grouping:
+                        data_axes[i].axvspan(v.index[0], v.index[-1], alpha=0.1, color = 'blue')
+
+                measurement = list(set([sensor.measurement for sensors in group]))[0]
+                units = list(set([sensor.units for sensors in group]))[0]
+
+                data_axes[i].legend(loc='best')
+                data_axes[i].set_ylabel(f'{measurement} ({units})')
+        else:
+            group = grouped_sensors[0]
+            for sensor in group:
+
+                data_axes.plot(self.df.index, self.df[sensor.col_name], label=sensor.short_name)
+
+                # highlight each span of faults
+                for k, v in fault_grouping:
+                    data_axes.axvspan(v.index[0], v.index[-1], alpha=0.1, color = 'blue')
+
+                measurement = list(set([sensor.measurement for sensors in group]))[0]
+                units = list(set([sensor.units for sensors in group]))[0]
+
+                data_axes.legend(loc='best')
+                data_axes.set_ylabel(f'{measurement} ({units})')
 
         plt.legend()
         plt.tight_layout()
 
         return fig
 
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc7_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc7_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_satsp = round(
-            df[self.sat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_sat = round(
-            df[self.satsp_col].where(df[output_col] == 1).mean(), 2
-        )
-        
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc7_mode,
-            percent_true,
-            percent_false,
-            flag_true_satsp,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc7_flag"
-
+    # creates a histogram plot for times when fault condition is true
+    def create_hist_plot(self) -> plt:
         # calculate dataset statistics
-        df["hour_of_the_day_fc7"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc7
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc7.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 7 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc7_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Seven Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition seven of ASHRAE Guideline 36 is an AHU heating mode only with an attempt at verifying an AHU heating or cooling valve is not stuck or leaking by verifying AHU supply temperature to supply temperature setpoint. Fault condition seven equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc7_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc7_mode,
-            percent_true,
-            percent_false,
-            flag_true_satsp,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc7_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-        
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 7 is True the average AHU supply air setpoint is {flag_true_satsp} in °F and the supply air temperature is {flag_true_sat} in °F.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.sat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp Setpoint', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.satsp_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Heating Coil Valve', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.htg_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating the AHU heating valve maybe broken or there could be a flow issue with the amount of hot water flowing through the coil or that the boiler system reset is too aggressive and there isnt enough heat being produced by this coil. It could be worth viewing mechanical blue prints for this AHU design schedule to see what hot water temperature this coil was designed for and compare it to actual hot water supply temperatures. IE., an AHU hot water coil sized to have a 180°F water flowing through it may have a durastic reduction in performance the colder the hot water is flowing through it, if need be consult a mechanical design engineer to rectify.')
-
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU heating valve operates Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeEightReport:
-    """Class provides the definitions for Fault Code 12 Report."""
-
-    def __init__(
-        self,
-        sat_col: str,
-        mat_col: str,
-        fan_vfd_speed_col: str,
-        economizer_sig_col: str,
-    ):
-        self.sat_col = sat_col
-        self.mat_col = mat_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-        self.economizer_sig_col = economizer_sig_col
-        
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-
-        if output_col is None:
-            output_col = "fc8_flag"
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 8 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.sat_col], label="SAT")
-        plot1b, = ax1.plot(df.index, df[self.mat_col], label="MAT")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Temps °F')
-
-        ax2.plot(df.index, df.fc8_flag, label="Fault", color="k")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Fault Flags')
-        ax2.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc8_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc8_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_sat = round(
-            df[self.sat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc8_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc8_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc8"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc8
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc8.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 8 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc8_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Eight Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition Eight of ASHRAE Guideline 36 is an AHU economizer free cooling mode only with an attempt at flagging conditions when the AHU mixing air temperature the supply air temperature are not approximately equal. Fault condition eight equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc8_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc8_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc8_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-        
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 8 is True the average AHU mix air is {flag_true_mat} in °F and the supply air temperature is {flag_true_sat} in °F.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.sat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Mix Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating temperature sensor error or the heating/cooling coils are leaking potentially creating simultenious heating/cooling which can be an energy penalty for running the AHU in this fashion. Verify AHU mix/supply temperature sensor calibration in addition to a potential mechanical issue of a leaking valve. A leaking valve can be troubleshot by isolating the valve closed by manual shut off valves where piping lines enter the AHU coil and then verifying any changes in the AHU discharge air temperature.')
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU components are within calibration for this fault equation Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeNineReport:
-    """Class provides the definitions for Fault Code 9 Report."""
-
-    def __init__(
-        self,
-        satsp_col: str,
-        oat_col: str,
-        fan_vfd_speed_col: str,
-        economizer_sig_col: str,
-    ):
-
-        self.satsp_col = satsp_col
-        self.oat_col = oat_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-        self.economizer_sig_col = economizer_sig_col
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-
-        if output_col is None:
-            output_col = "fc9_flag"
-
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 10 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.satsp_col], label="SATSP")
-        plot1b, = ax1.plot(df.index, df[self.oat_col], label="OAT")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Temps °F')
-
-        ax2.plot(df.index, df.fc9_flag, label="Fault", color="k")
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Fault Flags')
-        ax2.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc9_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc9_mode = (delta * df[output_col]).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_oat = round(
-            df[self.oat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_satsp = round(
-            df[self.satsp_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc9_mode,
-            percent_true,
-            percent_false,
-            flag_true_oat,
-            flag_true_satsp,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc9_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc9"] = df.index.hour.where(df[output_col] == 1)
+        self.df[f"hour_of_the_day_fc{self.fault.num}"] = self.df.index.hour.where(self.df['fault_flag'] == 1)
 
         # make hist plots fc10
         fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc9.dropna())
+        ax.hist(self.df[f"hour_of_the_day_fc{self.fault.num}"].dropna())
         ax.set_xlabel("24 Hour Number in Day")
         ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 9 is TRUE")
+        ax.set_title(f"Hour-Of-Day When Fault Flag {self.fault.num} is TRUE")
         return fig
 
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
+    def format_title_and_def(self):
+        # add title and fault definition
+        self.document.add_heading(f"Fault Condition {num2words(self.fault.num).title()} Report", 0)
 
-        if output_col is None:
-            output_col = "fc9_flag"
+        fault_def_str = f'Fault condition {num2words(self.fault.num)} of ASHRAE Guideline 36 {self.fault.definition}. Fault condition {num2words(self.fault.num)} equation as defined by ASHRAE:'
 
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Nine Report", 0)
+        p = self.document.add_paragraph(fault_def_str)
 
-        p = document.add_paragraph(
-            """Fault condition nine of ASHRAE Guideline 36 is an AHU economizer free cooling mode only with an attempt at flagging conditions where the outside air temperature is too warm for cooling without additional mechanical cooling. Fault condition nine equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc9_definition.png"),
+        self.document.add_picture(
+            os.path.join(os.path.curdir, "images", f"fc{self.fault.num}_definition.png"),
             width=Inches(6),
         )
-        document.add_heading("Dataset Plot", level=2)
 
-        fig = self.create_plot(df, output_col=output_col)
+    def format_dataset_plot(self):
+        # add dataset plot
+        self.document.add_heading("Dataset Plot", level=2)
+
+        fig = self.create_dataset_plot()
         fan_plot_image = BytesIO()
         fig.savefig(fan_plot_image, format="png")
         fan_plot_image.seek(0)
 
         # ADD IN SUBPLOTS SECTION
-        document.add_picture(
+        self.document.add_picture(
             fan_plot_image,
             width=Inches(6),
         )
-        document.add_heading("Dataset Statistics", level=2)
 
-        (
-            total_days,
-            total_hours,
-            hours_fc9_mode,
-            percent_true,
-            percent_false,
-            flag_true_oat,
-            flag_true_satsp,
-            hours_motor_runtime,
-            df_motor_on_filtered
+    def format_dataset_stats(self):
+        # add dataset statistics
+        self.document.add_heading("Dataset Statistics", level=2)
 
-        ) = self.summarize_fault_times(df, output_col=output_col)
+        stats_lines = [
+            f"Total time in days calculated in dataset: {self.calculator.total_days}",
+            f"Total time in hours calculated in dataset: {self.calculator.total_hours}",
+            f"Total time in hours for when fault flag is True: {self.calculator.hours_in_fault_mode}",
+            f"Percent of time in the dataset when the fault flag is True: {self.calculator.percent_in_fault_mode}%",
+            f"Percent of time in the dataset when the fault flag is False: {round((100 - self.calculator.percent_in_fault_mode), 2)}%",
+            f"Calculated motor runtime in hours based off of VFD signal > zero: {self.calculator.hours_motor_runtime}"
+        ]
 
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
+        for line in stats_lines:
+            self.document.add_paragraph(line, style="List Bullet")
 
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
+    def format_hist_plot(self):
+        # if there are faults, add the histogram plot
+        fc_max_faults_found = self.df['fault_flag'].max()
 
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc9_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-        
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
         if fc_max_faults_found != 0:
 
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
+            self.document.add_heading("Time-of-day Histogram Plots", level=2)
+
+            max_faults_line = f'When fault condition {self.fault.num} is True, the'
+
+            for sensor in self.calculator.fault.sensors:
+                if sensor.measurement == 'temperature': # only temp sensors
+                    max_faults_line =  f'{max_faults_line} average {sensor.long_name} is {sensor.avg_fault_val} {sensor.units}, ' # need to add {units}
+
+            max_faults_line = max_faults_line[0:-2] + "."
+
             histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
+            histogram_plot = self.create_hist_plot()
             histogram_plot.savefig(histogram_plot_image, format="png")
             histogram_plot_image.seek(0)
-            document.add_picture(
+            self.document.add_picture(
                 histogram_plot_image,
                 width=Inches(6),
             )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 9 is True the average outside air is {flag_true_oat} in °F and the supply air temperature setpoinht is {flag_true_satsp} in °F.')
-
         else:
             print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
+            max_faults_line = f'No faults were found in this given dataset for the equation defined by ASHRAE.'
 
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
+        self.document.add_paragraph(max_faults_line, style='List Bullet')
 
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
+    def format_summary_stats(self):
+        if not self.calculator.op_mode_cols: # just summarize temperature levels for different temp sensors
+            self.document.add_heading('Summary Statistics filtered for when the AHU is running', level=1)
 
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp Setpoint', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.satsp_col].describe()))
+            for sensor in self.calculator.fault.sensors:
+                if sensor.measurement == 'temperature': # only temp sensors
+                    self.document.add_heading(sensor.short_name, level=3)
+                    self.document.add_paragraph(
+                        str(self.calculator.df_motor_on_filtered[sensor.col_name].describe()),
+                        style = 'List Bullet'
+                        )
 
-        # ADD in Summary Statistics
-        document.add_heading('Outside Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.oat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating temperature sensor error or the cooling valve is stuck open or leaking causing overcooling. Trouble shoot a leaking valve by isolating the coil with manual shutoff valves and verify a change in AHU discharge air temperature with the AHU running.')
-
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU components are within calibration for this fault equation Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeTenReport:
-    """Class provides the definitions for Fault Code 10 Report."""
-
-    def __init__(
-        self,
-        oat_col: str,
-        mat_col: str,
-        clg_col: str,
-        economizer_sig_col: str,
-        fan_vfd_speed_col: str,
-    ):
-        self.oat_col = oat_col
-        self.mat_col = mat_col
-        self.clg_col = clg_col
-        self.economizer_sig_col = economizer_sig_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-
-        if output_col is None:
-            output_col = "fc10_flag"
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 10 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.mat_col], label="MAT")
-        plot1b, = ax1.plot(df.index, df[self.oat_col], label="OAT")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Temps °F')
+        else: # if self.calculator has psuedo_sensors, format summary times for them
+            self.document.add_heading("Calculated AHU Mode Statistics")
         
-        plot2a, = ax2.plot(
-            df.index, df[self.clg_col], label="AHU Cool Vlv", color="r")
-        plot2b, = ax2.plot(
-            df.index, df[self.economizer_sig_col], label="AHU Dpr Cmd", color="g")
-        ax2.legend(loc='best')
-        ax2.set_ylabel('%')
+            for sensor in self.calculator.pseudo_sensors:
+                (days, hours, percent) = sensor.op_time
 
-        ax3.plot(df.index, df.fc10_flag, label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
+                self.document.add_paragraph(
+                    f'Total time in hours while AHU is in {sensor.long_name}: {hours}',
+                    style='List Bullet')
+                
+                self.document.add_paragraph(
+                    f'Total percent time while AHU is in {sensor.long_name}: {percent}%',
+                    style="List Bullet")
 
-        plt.legend()
-        plt.tight_layout()
 
-        return fig
+    def format_suggestion(self):
+        self.document.add_heading("Suggestions based on data analysis", level=3)
+ 
+        suggestion_string = 'The amount of time this fault is True is'
 
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc10_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc10_mode = (delta * df[output_col]
-                           ).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_oat = round(
-            df[self.oat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc10_mode,
-            percent_true,
-            percent_false,
-            flag_true_oat,
-            flag_true_mat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc10_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc10"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc10
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc10.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 10 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc10_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Ten Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition ten of ASHRAE Guideline 36 is an AHU economizer + mechanical cooling mode only with an attempt at flagging conditions where the outside air temperature and mixing air temperatures are not approximetely equal when the AHU is in a 100% outside air mode. Fault condition ten equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc10_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc10_mode,
-            percent_true,
-            percent_false,
-            flag_true_oat,
-            flag_true_mat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc10_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-        
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 9 is True the average outside air is {flag_true_oat} in °F and the mixing air temperature is {flag_true_mat} in °F.')
-
+        if self.calculator.percent_in_fault_mode > 5.0:
+            suggestion_string = f'high, indicating {suggestion_string} {self.fault.suggestion_high_fault}.'
+                
         else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Mixing Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Outside Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.oat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating temperature sensor error or the mixing air dampers are stuck or broken with the inability for the AHU to go into a proper 100 percent outside air mode. If the outside air temperature is a global variable on the BAS verify (IE, installed to the boiler plant controller and then shared via supervisory level logic on the BAS to the AHU controllers on the BAS network) that where the actual OA temperature is installed that is on the North side of the building in the shade. On the AHU verify mix temperature sensor calibration and that the mixing dampers have good proper rotation with good seals when in the closed position. When testing AHU systems operating in a 100 percent outside air mode it could be worth verifying exhaust systems or return fans are operating properly. In thoery if alot of air is being pumped into the building and it is allowed to be exhaust or relieved properly, a balanced building will not have any issues of closing or opening egress doors to the building due to excess positive building pressure.')
-
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU components are within calibration for this fault equation Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeElevenReport:
-    """Class provides the definitions for Fault Code 11 Report."""
-
-    def __init__(
-        self,
-        sat_sp_col: str,
-        oat_col: str,
-        clg_col: str,
-        economizer_sig_col: str,
-        fan_vfd_speed_col: str,
-    ):
-        self.sat_sp_col = sat_sp_col
-        self.oat_col = oat_col
-        self.clg_col = clg_col
-        self.economizer_sig_col = economizer_sig_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-
-        if output_col is None:
-            output_col = "fc11_flag"
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 11 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.sat_sp_col], label="SATSP")
-        plot1b, = ax1.plot(df.index, df[self.oat_col], label="OAT")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Temps °F')
-
-        plot2a, = ax2.plot(
-            df.index, df[self.clg_col], label="AHU Cool Vlv", color="r")
-        plot2b, = ax2.plot(
-            df.index, df[self.economizer_sig_col], label="AHU Dpr Cmd", color="g")
-        ax2.legend(loc='best')
-        ax2.set_ylabel('%')
-
-        ax3.plot(df.index, df.fc11_flag, label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc11_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc11_mode = (delta * df[output_col]
-                           ).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_oat = round(
-            df[self.oat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_sat_sp = round(
-            df[self.sat_sp_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc11_mode,
-            percent_true,
-            percent_false,
-            flag_true_oat,
-            flag_true_sat_sp,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc11_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc11"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc11
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc11.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 11 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc11_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Eleven Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition eleven of ASHRAE Guideline 36 is an AHU economizer + mechanical cooling mode only with an attempt at flagging conditions where the outside air temperature is too low for 100% outside air AHU operating mode. Fault condition Eleven equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc11_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc11_mode,
-            percent_true,
-            percent_false,
-            flag_true_oat,
-            flag_true_sat_sp,
-            hours_motor_runtime,
-            df_motor_on_filtered
-
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc11_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-        
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 11 is True the average AHU mix air is {flag_true_oat} in °F and the supply air temperature is {flag_true_sat_sp} in °F.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp Setpoint', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.sat_sp_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Outside Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.oat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating temperature sensor error or the heating coil could be leaking potentially creating simultenious heating/cooling scenorio which can be an energy penalty for running the AHU in this fashion. Also visually verify with the AHU off via lock-out-tag-out that the mixing dampers operates effectively. To do this have one person the BAS sending operator override commands to drive the damper back and forth. The other person should put on eyes on the operation of the actuator motor driving the OA dampers 100 percent open and then closed and visually verify the dampers rotate effectively per BAS command where to also visually verify the dampers have a good seal when in the closed position. Also consider looking into BAS programming that may need tuning or parameter adjustments for the staging between OS state changes between AHU modes of operation.')
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU components are within calibration for this fault equation Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeTwelveReport:
-    """Class provides the definitions for Fault Code 12 Report."""
-
-    def __init__(
-        self,
-        sat_col: str,
-        mat_col: str,
-        clg_col: str,
-        economizer_sig_col: str,
-        fan_vfd_speed_col: str,
-    ):
-        self.sat_col = sat_col
-        self.mat_col = mat_col
-        self.clg_col = clg_col
-        self.economizer_sig_col = economizer_sig_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-        
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-
-        if output_col is None:
-            output_col = "fc12_flag"
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 12 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.sat_col], label="SAT")
-        plot1b, = ax1.plot(df.index, df[self.mat_col], label="MAT")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Temps °F')
-
-        plot2a, = ax2.plot(
-            df.index, df[self.clg_col], label="AHU Cool Vlv", color="r")
-        plot2b, = ax2.plot(
-            df.index, df[self.economizer_sig_col], label="AHU Dpr Cmd", color="g")
-        ax2.legend(loc='best')
-        ax2.set_ylabel('%')
-
-        ax3.plot(df.index, df.fc12_flag, label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc12_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc12_mode = (delta * df[output_col]
-                           ).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_mat = round(
-            df[self.mat_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_sat = round(
-            df[self.sat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-        
-        return (
-            total_days,
-            total_hours,
-            hours_fc12_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc12_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc12"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc12
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc12.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 12 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc12_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Twelve Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition Twelve of ASHRAE Guideline 36 is an AHU economizer + mechanical cooling mode and AHU mechanical cooling mode only with an attempt at flagging conditions when the AHU mixing air temperature is warmer than the supply air temperature. Fault condition Twelve equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc12_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc12_mode,
-            percent_true,
-            percent_false,
-            flag_true_mat,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc12_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-        
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 12 is True the average AHU mix air is {flag_true_mat} in °F and the supply air temperature is {flag_true_sat} in °F.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        # ADD in Summary Statistics
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.sat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Mix Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.mat_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating temperature sensor error or the heating/cooling coils are leaking potentially creating simultenious heating/cooling which can be an energy penalty for running the AHU in this fashion. Verify AHU mix/supply temperature sensor calibration in addition to a potential mechanical issue of a leaking valve. A leaking valve can be troubleshot by isolating the valve closed by manual shut off valves where piping lines enter the AHU coil and then verifying any changes in the AHU discharge air temperature.')
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU components are within calibration for this fault equation Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
-
-
-class FaultCodeThirteenReport:
-    """Class provides the definitions for Fault Code 13 Report.
-        Verify similar to FC 7 but uses cooling valve
-    """
-
-    def __init__(
-        self,
-        sat_col: str,
-        satsp_col: str,
-        clg_col: str,
-        economizer_sig_col: str,
-        fan_vfd_speed_col: str
-    ):
-        self.sat_col = sat_col
-        self.satsp_col = satsp_col
-        self.clg_col = clg_col
-        self.economizer_sig_col = economizer_sig_col
-        self.fan_vfd_speed_col = fan_vfd_speed_col
-
-    def create_plot(self, df: pd.DataFrame, output_col: str = None) -> plt:
-
-        if output_col is None:
-            output_col = "fc13_flag"
-
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(25, 8))
-        plt.title('Fault Conditions 13 Plot')
-
-        plot1a, = ax1.plot(df.index, df[self.sat_col], label="SAT")
-        plot1b, = ax1.plot(df.index, df[self.satsp_col], label="SATsp")
-        ax1.legend(loc='best')
-        ax1.set_ylabel('AHU Supply Temps °F')
-
-        plot2a, = ax2.plot(
-            df.index, df[self.clg_col], label="AHU Cool Vlv", color="r")
-        plot2b, = ax2.plot(
-            df.index, df[self.economizer_sig_col], label="AHU Dpr Cmd", color="g")
-        ax2.legend(loc='best')
-        ax2.set_ylabel('%')
-
-        ax3.plot(df.index, df.fc13_flag, label="Fault", color="k")
-        ax3.set_xlabel('Date')
-        ax3.set_ylabel('Fault Flags')
-        ax3.legend(loc='best')
-
-        plt.legend()
-        plt.tight_layout()
-
-        return fig
-
-    def summarize_fault_times(self, df: pd.DataFrame, output_col: str = None) -> str:
-        if output_col is None:
-            output_col = "fc13_flag"
-
-        delta = df.index.to_series().diff()
-        total_days = round(delta.sum() / pd.Timedelta(days=1), 2)
-
-        total_hours = delta.sum() / pd.Timedelta(hours=1)
-
-        hours_fc13_mode = (delta * df[output_col]
-                           ).sum() / pd.Timedelta(hours=1)
-
-        percent_true = round(df[output_col].mean() * 100, 2)
-        percent_false = round((100 - percent_true), 2)
-
-        flag_true_satsp = round(
-            df[self.satsp_col].where(df[output_col] == 1).mean(), 2
-        )
-        flag_true_sat = round(
-            df[self.sat_col].where(df[output_col] == 1).mean(), 2
-        )
-
-        motor_on = df[self.fan_vfd_speed_col].gt(1.).astype(int)
-        hours_motor_runtime = round(
-            (delta * motor_on).sum() / pd.Timedelta(hours=1), 2)
-
-        # for summary stats on I/O data to make useful
-        df_motor_on_filtered = df[df[self.fan_vfd_speed_col] > 1.0]
-
-        return (
-            total_days,
-            total_hours,
-            hours_fc13_mode,
-            percent_true,
-            percent_false,
-            flag_true_satsp,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-        )
-
-    def create_hist_plot(
-        self, df: pd.DataFrame,
-        output_col: str = None,
-        vav_total_flow: str = None
-    ) -> plt:
-
-        if output_col is None:
-            output_col = "fc13_flag"
-
-        # calculate dataset statistics
-        df["hour_of_the_day_fc13"] = df.index.hour.where(df[output_col] == 1)
-
-        # make hist plots fc13
-        fig, ax = plt.subplots(tight_layout=True, figsize=(25, 8))
-        ax.hist(df.hour_of_the_day_fc13.dropna())
-        ax.set_xlabel("24 Hour Number in Day")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Hour-Of-Day When Fault Flag 13 is TRUE")
-        return fig
-
-    def create_report(
-        self,
-        path: str,
-        df: pd.DataFrame,
-        output_col: str = None
-    ) -> None:
-
-        if output_col is None:
-            output_col = "fc13_flag"
-
-        print(f"Starting {path} docx report!")
-        document = Document()
-        document.add_heading("Fault Condition Thirteen Report", 0)
-
-        p = document.add_paragraph(
-            """Fault condition thirteen of ASHRAE Guideline 36 is an AHU cooling mode only with an attempt at verifying an AHU cooling valve is not stuck or leaking by verifying AHU supply temperature to supply temperature setpoint. Fault condition thirteen equation as defined by ASHRAE:"""
-        )
-
-        document.add_picture(
-            os.path.join(os.path.curdir, "images", "fc13_definition.png"),
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Plot", level=2)
-
-        fig = self.create_plot(df, output_col=output_col)
-        fan_plot_image = BytesIO()
-        fig.savefig(fan_plot_image, format="png")
-        fan_plot_image.seek(0)
-
-        # ADD IN SUBPLOTS SECTION
-        document.add_picture(
-            fan_plot_image,
-            width=Inches(6),
-        )
-        document.add_heading("Dataset Statistics", level=2)
-
-        (
-            total_days,
-            total_hours,
-            hours_fc13_mode,
-            percent_true,
-            percent_false,
-            flag_true_satsp,
-            flag_true_sat,
-            hours_motor_runtime,
-            df_motor_on_filtered
-
-        ) = self.summarize_fault_times(df, output_col=output_col)
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in days calculated in dataset: {total_days}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours calculated in dataset: {total_hours}")
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Total time in hours for when fault flag is True: {hours_fc13_mode}"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is True: {percent_true}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Percent of time in the dataset when the fault flag is False: {percent_false}%"
-        )
-
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-        paragraph.add_run(
-            f"Calculated motor runtime in hours based off of VFD signal > zero: {hours_motor_runtime}"
-        )
-
-        paragraph = document.add_paragraph()
-
-        # if there is no faults skip the histogram plot
-        fc_max_faults_found = df[output_col].max()
-        if fc_max_faults_found != 0:
-
-            # ADD HIST Plots
-            document.add_heading("Time-of-day Histogram Plots", level=2)
-            histogram_plot_image = BytesIO()
-            histogram_plot = self.create_hist_plot(df, output_col=output_col)
-            histogram_plot.savefig(histogram_plot_image, format="png")
-            histogram_plot_image.seek(0)
-            document.add_picture(
-                histogram_plot_image,
-                width=Inches(6),
-            )
-
-            paragraph = document.add_paragraph()
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'When fault condition 13 is True the average AHU supply air setpoint is {flag_true_satsp} in °F and the supply air temperature is {flag_true_sat} in °F.')
-
-        else:
-            print("NO FAULTS FOUND - For report skipping time-of-day Histogram plot")
-
-            paragraph.style = 'List Bullet'
-            paragraph.add_run(
-                f'No faults were found in this given dataset for the equation defined by ASHRAE.')
-
-        document.add_heading(
-            'Summary Statistics filtered for when the AHU is running', level=1)
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.sat_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Supply Air Temp Setpoint', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.satsp_col].describe()))
-
-        # ADD in Summary Statistics
-        document.add_heading('Cooling Coil Valve', level=3)
-        paragraph = document.add_paragraph()
-        paragraph.style = 'List Bullet'
-        paragraph.add_run(str(df_motor_on_filtered[self.clg_col].describe()))
-
-        document.add_heading("Suggestions based on data analysis", level=2)
-        paragraph = document.add_paragraph()
-        paragraph.style = "List Bullet"
-
-        if percent_true > 5.0:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is high indicating the AHU cooling valve maybe broken or there could be a flow issue with the amount of cold water flowing through the coil or that the chiller system leaving temperature reset is too aggressive and there isnt enough cold air being produced by this cooling coil. If this AHU has a DX cooling coil there could be a problem with the refrigerant charge. It could be worth viewing mechanical blue prints for this AHU design schedule to see what cold water temperature this coil was designed for and compare it to actual cold water supply temperatures. IE., an AHU cooling coil sized to have a 44°F water flowing through it may have significant performance reduction with 48°F water flowing through it and under design day type high load conditions this AHU may not meet setpoint or properly dehumidify the air for the building which could potentially also lead to IAQ or mold issues if %RH levels in the zones are kept within tollerance. Also check excessive outside air faults in fault condition 6 that the AHU isnt taking in too much outdoor air which could also cause coil performance issues if the load on the coil is higher than what it was intended for.')
-
-        else:
-            paragraph.add_run(
-                'The percent True metric that represents the amount of time for when the fault flag is True is low inidicating the AHU cooling valve operates Ok.')
-
-        paragraph = document.add_paragraph()
-        run = paragraph.add_run(f"Report generated: {time.ctime()}")
-        run.style = "Emphasis"
-        return document
+            suggestion_string = f'low, indicating {suggestion_string} {self.fault.suggestion_low_fault}.'
+
+        self.document.add_paragraph(suggestion_string, style="List Bullet")
+
+        paragraph = self.document.add_paragraph()
+        paragraph.add_run(f"Report generated: {time.ctime()}", style="Emphasis")
+
+    def create_document(self, path: str) -> Document:
+        self.format_title_and_def()
+        self.format_dataset_plot()
+        self.format_dataset_stats()
+        self. format_hist_plot()
+        self.format_summary_stats()
+        self.format_suggestion()
+
+        return self.document
+
+
+sensor_attrs = ['col_name','long_name','measurement', 'units', 'short_name']
+
+# this is just a simple way to store the sensors before we make them into objects
+# this is ordered as: col_name, long_name, measurement, units, short_name (with short_name optional)
+# the following should probably not live in code, would be better as a csv or json or database or whatever
+slist = [['mat', 'mixing air temperature', 'temperature', '°F', 'Mix Temp'],
+        ['rat', 'return air temperature', 'temperature', '°F', 'Return Temp'],
+        ['oat', 'outside air temperature', 'temperature', '°F', 'Out Temp'],
+        ['sat', 'supply air temperature', 'temperature', '°F', 'Supply Temp'],
+        ['satsp', 'supply air temperature setpoint', 'temperature', '°F', 'Out Temp',],
+        ['economizer_sig', 'outside air damper position', 'percent', '%', 'AHU Dpr Cmd'],
+        ['clg', 'AHU cooling valve', 'percent', '%', 'AHU Cool Valv'],
+        ['htg', 'AHU heating valve', 'percent', '%', 'AHU Htg Valv'],
+        ['cooling_sig', 'cooling signal', 'operating state', 'flag', 'Mech Clg'],
+        ['heating_sig', 'heating signal', 'operating state', 'flag', 'Heat'],
+        ['vav_total_flow', 'VAV total air flow', 'volume flow', 'cfm', 'VAV total flow'],
+        ['duct_static', 'duct static pressure', 'pressure','inches WC', 'Static'],
+        ['duct_static_setpoint', 'duct static pressure setpoint', 'pressure', 'inches WC', 'Static SP'],
+        ['heating_mode', 'heating mode','operating state', 'flag','Heat'],
+        ['econ_only_cooling_mode','economizing mode','operating state', 'flag','Econ Clg'],
+        ['econ_plus_mech_cooling_mode','economizing plus mechanical cooling mode','operating state', 'flag','Econ + Mech Clg'],
+        ['mech_cooling_only_mode','mechanical cooling mode','operating state', 'flag','Clg']
+    ]
+
+ALL_SENSORS = [Sensor(**dict(zip(sensor_attrs, sensor))) for sensor in slist]
+
+fault_attrs = ['num', 'col_names', 'definition', 'suggestion_high_fault', 'suggestion_low_fault']
+
+# same thing here -- this shouldn't be stored as code, should be separate files that can be easily tweaked
+fault_defs = [
+    [1, ['duct_static', 'duct_static_setpoint', 'supply_vfd_speed'], 
+        'flags poor performance of a AHU variable supply fan attempting to control to a duct pressure setpoint',
+        'the fan is running at high speeds and appearing to not generate good duct static pressure',
+        'the fan appears to generate good duct static pressure'
+        ],
+
+    [2, ['mat','rat','oat'],
+        'flags mixing air temperatures of the AHU that are too low compared to return and outside air data. The mixing air temperatures in theory should always be in between the return and outside air temperatures ranges',
+        'the AHU temperature sensors are out of calibration',
+        'the AHU temperature sensors are within calibration'
+        ],
+
+    [3, ['mat','rat','oat'], 
+        'flags mixing air temperatures of the AHU that are too high compared to return and outside air data. The mixing air temperatures in theory should always be in between the return and outside air temperatures ranges',
+        'the AHU temperature sensors are out of calibration',
+        'the AHU temperature sensors are within calibration'
+        ],
+
+    [4, ['economizer_sig','heating_sig','cooling_sig'], 
+        'flags AHU control programming that is hunting between heating, economizing, economizing plus mechanical cooling, and mechanical cooling operating states. This fault diagnostic does NOT flag simultaneous heating and cooling, just excessive cycling between AHU operating modes',
+        'the AHU control system needs tuning to reduce control loop hunting for setpoints. It is hunting or overshooting setpoints which can cause AHU systems to be oscillating (most likely too fast) between heating and cooling modes without never settling out. Low load conditions can also cause excessive cycling if heating or cooling setpoints are met very fast. Verify that the times when this fault is flagged that no occupant comfort issues persist. Fixing this fault may also improve energy efficiency and extend the mechanical equipment life span with the prevention of excessive cycling especially cooling compressors',
+        'no control system tuning appears to be needed for the operating conditions of this AHU'
+        ],
+
+    [5, ['mat','sat','htg'], 
+        'supply air temperatures that are out of acceptable ranges based on the mix air temperature and an assumption for heat created by the AHU supply fan in the air stream',
+        'the AHU temperature sensors for either the supply or mix temperature are out of calibration. Verify the mixing temperature sensor is not a probe type sensor but a long averaging type sensor that is installed properly inside the AHU mixing chamber to get a good solid true reading of the actual air mixing temperature. Poor duct design may also contribute to not having good air mixing, to troubleshoot install data loggers inside the mixing chamber or take measurements when the AHU is running of different locations in the mixing chamber to spot where better air blending needs to take place',
+        'the AHU temperature sensors are within calibration'
+        ],
+
+    [6, ['vav_total_flow','mat','oat','rat'],
+        'attempts to verify that AHU design minimum outside air is close to the calculated outside air fraction through the outside, mix, and return air temperature sensors. A fault will get flagged if the OA fraction is too low or too high as compared to design OA',
+        'sensors are out of calibration either on the AHU outside, mix, or return air temperature sensors that handle the OA fraction calculation or the totalized air flow calculation handled by a totalizing all VAV box air flows or AHU AFMS. Air flow and/or AHU temperature sensor may require recalibration',
+        'the sensors are within calibration'],
+
+    [7, ['sat','satsp','htg'],
+        'applies to AHU heating mode only, and attempts to verify an AHU heating or cooling valve is not stuck or leaking by verifying AHU supply temperature to supply temperature setpoint',
+        'the AHU heating valve maybe broken or there could be a flow issue with the amount of hot water flowing through the coil or that the boiler system reset is too aggressive and there isnt enough heat being produced by this coil. It could be worth viewing mechanical blue prints for this AHU design schedule to see what hot water temperature this coil was designed for and compare it to actual hot water supply temperatures. IE., an AHU hot water coil sized to have a 180°F water flowing through it may have a durastic reduction in performance the colder the hot water is flowing through it, if need be consult a mechanical design engineer to rectify',
+        'the AHU heating valve is operating appropriately'
+        ],
+
+    [8, ['sat','mat','economizer_sig'], 
+        'is an AHU economizer free cooling mode only with an attempt at flagging conditions when the AHU mixing air temperature the supply air temperature are not approximately equal',
+        'temperature sensor error or the heating/cooling coils are leaking potentially creating simultenious heating/cooling which can be an energy penalty for running the AHU in this fashion. Verify AHU mix/supply temperature sensor calibration in addition to a potential mechanical issue of a leaking valve. A leaking valve can be troubleshot by isolating the valve closed by manual shut off valves where piping lines enter the AHU coil and then verifying any changes in the AHU discharge air temperature',
+        'the AHU components are within calibration for this fault equation'],
+
+    [9, ['satsp','oat'], 
+        'is an AHU economizer free cooling mode only with an attempt at flagging conditions where the outside air temperature is too warm for cooling without additional mechanical cooling',
+        'temperature sensor error or the cooling valve is stuck open or leaking causing overcooling. Trouble shoot a leaking valve by isolating the coil with manual shutoff valves and verify a change in AHU discharge air temperature with the AHU running',
+        'the AHU components are within calibration for this fault equation'
+        ],
+
+    [10, ['oat','mat','clg','economizer_sig'], 
+        'is an AHU economizer + mechanical cooling mode only with an attempt at flagging conditions where the outside air temperature and mixing air temperatures are not approximetely equal when the AHU is in a 100% outside air mode',
+        'temperature sensor error or the mixing air dampers are stuck or broken with the inability for the AHU to go into a proper 100 percent outside air mode. If the outside air temperature is a global variable on the BAS verify (IE, installed to the boiler plant controller and then shared via supervisory level logic on the BAS to the AHU controllers on the BAS network) that where the actual OA temperature is installed that is on the North side of the building in the shade. On the AHU verify mix temperature sensor calibration and that the mixing dampers have good proper rotation with good seals when in the closed position. When testing AHU systems operating in a 100 percent outside air mode it could be worth verifying exhaust systems or return fans are operating properly. In thoery if alot of air is being pumped into the building and it is allowed to be exhaust or relieved properly, a balanced building will not have any issues of closing or opening egress doors to the building due to excess positive building pressure',
+        'the AHU components are within calibration for this fault equation'
+        ],
+
+    [11, ['satsp','oat','clg','economizer_sig'], 
+        'is an AHU economizer + mechanical cooling mode only with an attempt at flagging conditions where the outside air temperature is too low for 100% outside air AHU operating mode',
+        'temperature sensor error or the heating coil could be leaking potentially creating simultenious heating/cooling scenorio which can be an energy penalty for running the AHU in this fashion. Also visually verify with the AHU off via lock-out-tag-out that the mixing dampers operates effectively. To do this have one person the BAS sending operator override commands to drive the damper back and forth. The other person should put on eyes on the operation of the actuator motor driving the OA dampers 100 percent open and then closed and visually verify the dampers rotate effectively per BAS command where to also visually verify the dampers have a good seal when in the closed position. Also consider looking into BAS programming that may need tuning or parameter adjustments for the staging between OS state changes between AHU modes of operation',
+        'the AHU components are within calibration for this fault equation'
+        ],
+
+    [12, ['sat','mat','clg','economizer_sig'], 
+        'is an AHU economizer + mechanical cooling mode and AHU mechanical cooling mode only with an attempt at flagging conditions when the AHU mixing air temperature is warmer than the supply air temperature',
+        'temperature sensor error or the heating/cooling coils are leaking potentially creating simultenious heating/cooling which can be an energy penalty for running the AHU in this fashion. Verify AHU mix/supply temperature sensor calibration in addition to a potential mechanical issue of a leaking valve. A leaking valve can be troubleshot by isolating the valve closed by manual shut off valves where piping lines enter the AHU coil and then verifying any changes in the AHU discharge air temperature',
+        'the AHU components are within calibration for this fault equation'],
+
+    [13, ['sat','satsp','clg','economizer_sig'], 
+        'is an AHU cooling mode only with an attempt at verifying an AHU cooling valve is not stuck or leaking by verifying AHU supply temperature to supply temperature setpoint',
+        'the AHU cooling valve maybe broken or there could be a flow issue with the amount of cold water flowing through the coil or that the chiller system leaving temperature reset is too aggressive and there isnt enough cold air being produced by this cooling coil. If this AHU has a DX cooling coil there could be a problem with the refrigerant charge. It could be worth viewing mechanical blue prints for this AHU design schedule to see what cold water temperature this coil was designed for and compare it to actual cold water supply temperatures. IE., an AHU cooling coil sized to have a 44°F water flowing through it may have significant performance reduction with 48°F water flowing through it and under design day type high load conditions this AHU may not meet setpoint or properly dehumidify the air for the building which could potentially also lead to IAQ or mold issues if %RH levels in the zones are kept within tollerance. Also check excessive outside air faults in fault condition 6 that the AHU isnt taking in too much outdoor air which could also cause coil performance issues if the load on the coil is higher than what it was intended for',
+        'the AHU cooling valve operates as expected']
+]
+
+
+ALL_FAULTS = [Fault(**dict(zip(fault_attrs,fault_def))) for fault_def in fault_defs]
+
+
+class Report:
+    def __init__(self, fault_num: int, df: pd.DataFrame, path: str, op_mode_cols: list = None):
+
+        # for fault in ALL_FAULTS:
+        #     if fault.num == fault_num:
+        #         fault = fault
+        self.fault = next((fault for fault in ALL_FAULTS if fault.num == fault_num), None)
+
+        self.calculator = Calculator(self.fault, df, op_mode_cols = op_mode_cols)
+        self.document_generator = DocumentGenerator(self.fault, df, self.calculator)
+
+        self.document = self.document_generator.create_document(path)
+
+        self.path = path
+
+    def save_report(self):
+
+        self.document.save(self.path)
+        # breakpoint()
+
+
+# test run:
+
+
+# FAULT_NUM = 4
+
+# if FAULT_NUM == 2:
+#     # -------------------- FC 2
+#     OUTDOOR_DEGF_ERR_THRES = 5.
+#     MIX_DEGF_ERR_THRES = 5.
+#     RETURN_DEGF_ERR_THRES = 2.
+
+#     from faults import FaultConditionTwo
+#     FAULT_CONDITION = FaultConditionTwo(
+#         OUTDOOR_DEGF_ERR_THRES,
+#         MIX_DEGF_ERR_THRES,
+#         RETURN_DEGF_ERR_THRES,
+#         "mat",
+#         "rat",
+#         "oat",
+#         "supply_vfd_speed"
+#     )
+
+# elif FAULT_NUM == 10:
+#     #-------------------- FC 10
+#     # ADJUST this param for the AHU MIN OA damper stp
+#     AHU_MIN_OA = 20
+
+#     # G36 params shouldnt need adjusting
+#     # error threshold parameters
+#     OAT_DEGF_ERR_THRES = 5
+#     MAT_DEGF_ERR_THRES = 5
+
+#     from faults import FaultConditionTen
+#     FAULT_CONDITION = FaultConditionTen(
+#         OAT_DEGF_ERR_THRES,
+#         MAT_DEGF_ERR_THRES,
+#         "mat",
+#         "oat",
+#         "clg",
+#         "economizer_sig",
+#     )
+
+# elif FAULT_NUM == 4:
+
+#     # -------------------- FC 4
+#     # G36 params COULD need adjusting
+#     # default OS MAX state changes is 7
+#     # which seems high, could be worth adjusting 
+#     # down to 4 to see what the faults look like
+#     DELTA_OS_MAX = 7
+
+#     # ADJUST this param for the AHU MIN OA damper stp
+#     AHU_MIN_OA = 20
+
+#     from faults import FaultConditionFour
+#     FAULT_CONDITION = FaultConditionFour(
+#         DELTA_OS_MAX,
+#         AHU_MIN_OA,
+#         "economizer_sig",
+#         "heating_sig",
+#         "cooling_sig",
+#         "supply_vfd_speed"
+#     )
+
+# DF = pd.read_csv(f"ahu_data/hvac_random_fake_data/fc{FAULT_NUM}_fake_data1.csv", index_col="Date", parse_dates=True).rolling("5T").mean()
+
+# df2 = FAULT_CONDITION.apply(DF)
+
+# # FAULT_OBJ = [fault for fault in ALL_FAULTS if fault.num == FAULT_NUM][0]
+
+# # these should be col_name, display name
+# fc4_op_modes = ['heating_mode', 'econ_only_cooling_mode', 'econ_plus_mech_cooling_mode', 'mech_cooling_only_mode']
+
+# # calculator = Calculator(FAULT_OBJ, df2, op_mode_cols = fc4_op_modes)
+# # document_generator = DocumentGenerator(FAULT_OBJ, df2)
+
+# # # dataset_fig = document_generator.create_dataset_plot()
+# # # hist_fig = document_generator.create_hist_plot()
+# # # fig = document_generator_generator.create_dataset_plot()
+# # # plt.show()
+
+# # document = document_generator.create_document('blah', calculator)
+# # document.save(f"test_fc{FAULT_NUM}.docx")
+
+
+# report = Report(FAULT_NUM, df2, f"test_fc{FAULT_NUM}.docx", op_mode_cols = fc4_op_modes)
